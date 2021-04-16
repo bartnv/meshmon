@@ -27,7 +27,14 @@ struct Connection {
     peername: String,
     socket: net::TcpStream,
     lastdata: time::Instant,
-    synced: bool,
+    state: ConnState,
+}
+#[derive(Debug)]
+enum ConnState {
+    New,
+    Introduced,
+    Encrypted,
+    Synchronized,
 }
 
 #[tokio::main]
@@ -87,6 +94,6 @@ async fn incoming_tcp(mut socket: net::TcpStream, local: std::net::SocketAddr, r
             Err(_) => return Err("read error")
         };
         println!("Received data: {}", &str::from_utf8(&buf).unwrap());
-        return Ok(Connection { peername: "test".to_string(), socket, lastdata: time::Instant::now(), synced: true });
+        return Ok(Connection { peername: "test".to_string(), socket, lastdata: time::Instant::now(), state: ConnState::New });
     }
 }
