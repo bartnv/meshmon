@@ -6,19 +6,20 @@ use std::{str, time, env, default::Default, sync::RwLock, error::Error, sync::Ar
 use tokio::{fs, net, sync, io::AsyncReadExt, io::AsyncWriteExt};
 use sysinfo::{SystemExt};
 use generic_array::GenericArray;
+use petgraph::{ Graph, graph };
 
 #[derive(Serialize, Deserialize)]
 struct Config {
     name: String,
     listen: Vec<String>,
     privkey: String,
-    peers: Vec<Peer>,
+    nodes: Vec<Node>,
     #[serde(skip)]
     runtime: RwLock<Runtime>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Peer {
+struct Node {
     name: String,
     listen: Vec<String>,
     pubkey: String,
@@ -29,19 +30,20 @@ struct Runtime {
     privkey: Option<SecretKey>,
     pubkey: Option<PublicKey>,
     sysinfo: Option<sysinfo::System>,
+    graph: Graph<String, f32>,
 }
 
 #[derive(Debug)]
 struct Connection {
-    peername: String,
+    nodename: String,
     lastdata: time::Instant,
     state: ConnState,
     pubkey: Option<PublicKey>,
 }
 impl Connection {
-    fn new(peername: String) -> Connection {
+    fn new(nodename: String) -> Connection {
         Connection {
-            peername,
+            nodename,
             lastdata: time::Instant::now(),
             state: ConnState::New,
             pubkey: None
@@ -58,13 +60,33 @@ enum ConnState {
 }
 #[derive(Debug)]
 enum Control {
-    NewPeer,
+    NewConn(String, sync::mpsc::Sender<Control>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Protocol {
     Intro { version: u8, name: String, pubkey: String },
     Crypt { boottime: u64, osversion: String },
+    Edge { from: String, to: String, ms: f32 },
+    Sync,
+}
+impl Protocol {
+    fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
+        let pubkey = base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.as_ref().unwrap().as_bytes());
+        Protocol::Intro { version: 1, name: config.read().unwrap().name.clone(), pubkey }
+    }
+    fn new_crypt(config: &Arc<RwLock<Config>>) -> Protocol {
+        let config = config.read().unwrap();
+        let runtime = config.runtime.read().unwrap();
+        let sysinfo = runtime.sysinfo.as_ref().unwrap();
+        let osversion = format!("{} {} ({} / {})",
+            sysinfo.get_name().unwrap_or_else(|| "<unknown>".to_owned()),
+            sysinfo.get_os_version().unwrap_or_else(|| "<unknown>".to_owned()),
+            sysinfo.get_host_name().unwrap_or_else(|| "<unknown>".to_owned()),
+            sysinfo.get_kernel_version().unwrap_or_else(|| "<unknown>".to_owned())
+        );
+        Protocol::Crypt { boottime: sysinfo.get_boot_time(), osversion }
+    }
 }
 
 #[tokio::main]
@@ -72,14 +94,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let config: Arc<RwLock<Config>>;
     if args.contains(&"--init".to_owned()) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::OsRng;
         let privkey = base64::encode(SecretKey::generate(&mut rng).to_bytes());
         config = Arc::new(RwLock::new(
             Config {
                 name: String::from("MyName"),
                 listen: vec!["0.0.0.0:7531".to_owned()],
                 privkey,
-                peers: Vec::new(),
+                nodes: Vec::new(),
                 runtime: RwLock::new(Default::default()),
             }
         ));
@@ -97,7 +119,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.privkey = Some(rawkey.into());
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key().clone());
     }
-    println!("My pubkey is {}", base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.unwrap().to_bytes()));
+    println!("My pubkey is {}", base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.as_ref().unwrap().as_bytes()));
 
     println!("Reading system information...");
     {
@@ -129,7 +151,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
-        connect_all_peers(aconfig, tx.clone()).await;
+        connect_all_nodes(aconfig, tx.clone()).await;
         loop {
             if let Some(ctrl) = rx.recv().await {
                 println!("Received control message {:?}", ctrl);
@@ -149,22 +171,24 @@ async fn write_config(config: &Config) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, control: sync::mpsc::Sender<Control>, active: bool) {
+async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool) {
+    let (tx, mut ctrlrx) = sync::mpsc::channel(10);
     let mut conn = Connection::new(match socket.peer_addr() {
         Ok(a) => a.to_string(),
         Err(_) => String::from("{unknown}")
     });
+    let mut sbox: Option<SalsaBox> = None;
     let mut buf = vec![0; 1500];
     let mut collector: Vec<u8> = vec![];
     loop {
         let n = match socket.read(&mut buf).await {
             Ok(n) if n > 0 => n,
             Ok(_) => {
-                println!("Connection with {} closed", conn.peername);
+                println!("Connection with {} closed", conn.nodename);
                 return;
             },
             Err(_) => {
-                println!("Read error on connection with {}", conn.peername);
+                println!("Read error on connection with {}", conn.nodename);
                 return;
             }
         };
@@ -180,35 +204,35 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, contro
         if conn.state != ConnState::New { // Frame will be encrypted
             let config = config.read().unwrap();
             let runtime = config.runtime.read().unwrap();
-            let sbox = SalsaBox::new(&conn.pubkey.unwrap(), &runtime.privkey.as_ref().unwrap());
-            match decrypt_frame(sbox, &frame[..]) {
+            match decrypt_frame(&sbox, &frame[..]) {
                 Ok(plaintext) => { frame = plaintext; },
                 Err(e) => {
-                    eprintln!("Failed to decrypt message: {:?}; dropping connection to {}", e, conn.peername);
+                    eprintln!("Failed to decrypt message: {:?}; dropping connection to {}", e, conn.nodename);
                     return;
                 }
             }
         }
         let result: Result<Protocol, DecodeError> = rmp_serde::from_read_ref(&frame);
         if let Err(ref e) = result {
-            println!("Deserialization error: {:?}; dropping connection to {}", e, conn.peername);
+            println!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename);
             return;
         }
         let proto = result.unwrap();
         println!("Received {:?}", proto);
+        let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10);
         match proto {
             Protocol::Intro { version, name, pubkey } => {
-                conn.peername = name;
+                conn.nodename = name;
                 conn.state = ConnState::Introduced;
 
                 {
-                    let peers = &config.read().unwrap().peers;
-                    let peer = peers.iter().find(|&peer| peer.name == conn.peername);
-                    if peer.is_none() || (peer.unwrap().pubkey != pubkey) {
-                        // let newpeer = Peer { name: conn.peername.clone(), listen: vec![], pubkey };
-                        // config.write().unwrap().peers.push(newpeer);
-                        // peer = config.read().unwrap().peers.last()
-                        eprintln!("Intro received from unknown peer {} ({})", conn.peername, pubkey);
+                    let nodes = &config.read().unwrap().nodes;
+                    let node = nodes.iter().find(|&node| node.name == conn.nodename);
+                    if node.is_none() || (node.unwrap().pubkey != pubkey) {
+                        // let newnode = Node { name: conn.nodename.clone(), listen: vec![], pubkey };
+                        // config.write().unwrap().nodes.push(newnode);
+                        // node = config.read().unwrap().nodes.last()
+                        eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
                         return;
                     }
                     let mut keybytes: [u8; 32] = [0; 32];
@@ -216,48 +240,56 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, contro
                     conn.pubkey = Some(PublicKey::from(keybytes));
                 }
 
+                sbox = Some(SalsaBox::new(&conn.pubkey.as_ref().unwrap(), &config.read().unwrap().runtime.read().unwrap().privkey.as_ref().unwrap()));
                 if active {
                     println!("Switching to a secure line...");
-                    let frame;
-                    {
-                        let config = config.read().unwrap();
-                        let runtime = config.runtime.read().unwrap();
-                        let sysinfo = runtime.sysinfo.as_ref().unwrap();
-                        let osversion = format!("{} {} ({} / {})",
-                            sysinfo.get_name().unwrap_or_else(|| "<unknown>".to_owned()),
-                            sysinfo.get_os_version().unwrap_or_else(|| "<unknown>".to_owned()),
-                            sysinfo.get_host_name().unwrap_or_else(|| "<unknown>".to_owned()),
-                            sysinfo.get_kernel_version().unwrap_or_else(|| "<unknown>".to_owned())
-                        );
-                        let sbox = SalsaBox::new(&conn.pubkey.unwrap(), &runtime.privkey.as_ref().unwrap());
-                        frame = build_frame(Some(sbox), Protocol::Crypt { boottime: sysinfo.get_boot_time(), osversion });
-                    }
-                    if socket.write_all(&frame).await.is_err() {
-                        eprintln!("Write error to {}", conn.peername);
-                        break;
-                    }
+                    frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
                 }
                 else {
-                    let pubkey = base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.unwrap().to_bytes());
-                    let frame = build_frame(None, Protocol::Intro { version: 1, name: config.read().unwrap().name.clone(), pubkey });
-                    if socket.write_all(&frame).await.is_err() {
-                        eprintln!("Write error to {}", conn.peername);
-                        break;
-                    }
+                    frames.push(build_frame(&None, Protocol::new_intro(&config)));
                 }
             },
             Protocol::Crypt { boottime, osversion } => {
+                conn.state = ConnState::Encrypted;
+                ctrltx.send(Control::NewConn(conn.nodename.clone(), tx.clone())).await.unwrap();
 
+                if active {
+                    let config = config.read().unwrap();
+                    let runtime = config.runtime.read().unwrap();
+                    let nodes = runtime.graph.raw_nodes();
+                    for edge in runtime.graph.raw_edges() {
+                        println!("{:?}", edge);
+                        // println!("{} -> {}", nodes[edge.source().into()].weight, nodes[edge.target().into()].weight);
+                    }
+                    frames.push(build_frame(&sbox, Protocol::Sync));
+                }
+                else {
+                    frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
+                }
+            },
+            Protocol::Edge { from, to, ms } => {
+
+            },
+            Protocol::Sync => {
+                println!("Synchronized with {}", conn.nodename);
+                if !active {
+                    frames.push(build_frame(&sbox, Protocol::Sync));
+                }
             }
         }
-        control.send(Control::NewPeer).await.unwrap();
+        for frame in frames {
+            if socket.write_all(&frame).await.is_err() {
+                eprintln!("Write error to {}", conn.nodename);
+                break;
+            }
+        }
      }
 }
 
-async fn connect_all_peers(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>) {
+async fn connect_all_nodes(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>) {
     let mut targets: Vec<String> = vec![];
-    for peer in &config.read().unwrap().peers {
-        for addr in &peer.listen {
+    for node in &config.read().unwrap().nodes {
+        for addr in &node.listen {
             targets.push(addr.clone());
         }
     }
@@ -266,8 +298,7 @@ async fn connect_all_peers(config: Arc<RwLock<Config>>, control: sync::mpsc::Sen
         match net::TcpStream::connect(&addr).await {
             Ok(mut stream) => {
                 println!("Connected to {}", addr);
-                let pubkey = base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.unwrap().to_bytes());
-                let frame = build_frame(None, Protocol::Intro { version: 1, name: config.read().unwrap().name.clone(), pubkey });
+                let frame = build_frame(&None, Protocol::new_intro(&config));
                 if stream.write_all(&frame).await.is_err() { continue; }
                 let config = config.clone();
                 let control = control.clone();
@@ -280,10 +311,10 @@ async fn connect_all_peers(config: Arc<RwLock<Config>>, control: sync::mpsc::Sen
     }
 }
 
-fn build_frame(sbox: Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
+fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
     println!("Sending {:?}", proto);
     let payload = match sbox {
-        Some(sbox) => encrypt_frame(sbox, &rmp_serde::to_vec(&proto).unwrap()),
+        Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
         None => rmp_serde::to_vec(&proto).unwrap()
     };
     let mut frame: Vec<u8> = Vec::new();
@@ -293,15 +324,15 @@ fn build_frame(sbox: Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
     frame
 }
 
-fn encrypt_frame(sbox: SalsaBox, plaintext: &[u8]) -> Vec<u8> {
-    let mut rng = rand::thread_rng();
+fn encrypt_frame(sbox: &SalsaBox, plaintext: &[u8]) -> Vec<u8> {
+    let mut rng = rand::rngs::OsRng;
     let nonce = crypto_box::generate_nonce(&mut rng);
     let mut payload: Vec<u8> = vec![];
     payload.extend_from_slice(nonce.as_slice());
     payload.extend_from_slice(&sbox.encrypt(&nonce, plaintext).unwrap());
     payload
 }
-fn decrypt_frame(sbox: SalsaBox, payload: &[u8]) -> Result<Vec<u8>, crypto_box::aead::Error> {
+fn decrypt_frame(sbox: &Option<SalsaBox>, payload: &[u8]) -> Result<Vec<u8>, crypto_box::aead::Error> {
     let nonce = GenericArray::from_slice(&payload[0..24]);
-    sbox.decrypt(nonce, &payload[24..])
+    sbox.as_ref().unwrap().decrypt(nonce, &payload[24..])
 }
