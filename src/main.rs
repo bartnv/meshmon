@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports, unused_variables)]
+#![allow(dead_code, unused_imports, unused_variables, unused_mut)] // Please be quiet, I'm coding
 use crypto_box::{aead::Aead, PublicKey, SalsaBox, SecretKey};
 use serde_derive::{Deserialize, Serialize};
 use rmp_serde::decode::Error as DecodeError;
@@ -121,12 +121,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("My pubkey is {}", base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.as_ref().unwrap().as_bytes()));
 
-    println!("Reading system information...");
+    println!("Initializing runtime data structures...");
     {
         let config = config.read().unwrap();
         let mut runtime = config.runtime.write().unwrap();
         runtime.sysinfo = Some(sysinfo::System::new_all());
         runtime.sysinfo.as_mut().unwrap().refresh_all();
+        runtime.graph.add_node(config.name.clone());
     }
 
     let (tx, mut rx) = sync::mpsc::channel(10);
@@ -181,109 +182,123 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     let mut buf = vec![0; 1500];
     let mut collector: Vec<u8> = vec![];
     loop {
-        let n = match socket.read(&mut buf).await {
-            Ok(n) if n > 0 => n,
-            Ok(_) => {
-                println!("Connection with {} closed", conn.nodename);
-                return;
-            },
-            Err(_) => {
-                println!("Read error on connection with {}", conn.nodename);
-                return;
+        tokio::select!{
+            res = ctrlrx.recv() => {
+                println!("Received control message {:?}", res.unwrap());
             }
-        };
-        // let mut hex = String::with_capacity(n*2);
-        // for byte in &buf[0..n] { hex.push_str(&format!("{:02X} ", byte)); };
-        // println!("Received data: {}", hex);
-        collector.extend_from_slice(&buf[0..n]);
-        if collector.len() < 2 { continue; }
-        let framelen = (collector[1] as usize) << 8 | collector[0] as usize; // len is little-endian
-        if collector.len() < framelen+2 { continue; }
-        collector.drain(0..2); // Remove the length header
-        let mut frame: Vec<u8> = collector.drain(0..framelen).collect();
-        if conn.state != ConnState::New { // Frame will be encrypted
-            let config = config.read().unwrap();
-            let runtime = config.runtime.read().unwrap();
-            match decrypt_frame(&sbox, &frame[..]) {
-                Ok(plaintext) => { frame = plaintext; },
-                Err(e) => {
-                    eprintln!("Failed to decrypt message: {:?}; dropping connection to {}", e, conn.nodename);
-                    return;
-                }
-            }
-        }
-        let result: Result<Protocol, DecodeError> = rmp_serde::from_read_ref(&frame);
-        if let Err(ref e) = result {
-            println!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename);
-            return;
-        }
-        let proto = result.unwrap();
-        println!("Received {:?}", proto);
-        let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10);
-        match proto {
-            Protocol::Intro { version, name, pubkey } => {
-                conn.nodename = name;
-                conn.state = ConnState::Introduced;
-
-                {
-                    let nodes = &config.read().unwrap().nodes;
-                    let node = nodes.iter().find(|&node| node.name == conn.nodename);
-                    if node.is_none() || (node.unwrap().pubkey != pubkey) {
-                        // let newnode = Node { name: conn.nodename.clone(), listen: vec![], pubkey };
-                        // config.write().unwrap().nodes.push(newnode);
-                        // node = config.read().unwrap().nodes.last()
-                        eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
+            res = socket.read(&mut buf) => {
+                let n = match res {
+                    Ok(n) if n > 0 => n,
+                    Ok(_) => {
+                        println!("Connection with {} closed", conn.nodename);
+                        return;
+                    },
+                    Err(_) => {
+                        println!("Read error on connection with {}", conn.nodename);
                         return;
                     }
-                    let mut keybytes: [u8; 32] = [0; 32];
-                    keybytes.copy_from_slice(&base64::decode(pubkey).unwrap());
-                    conn.pubkey = Some(PublicKey::from(keybytes));
-                }
-
-                sbox = Some(SalsaBox::new(&conn.pubkey.as_ref().unwrap(), &config.read().unwrap().runtime.read().unwrap().privkey.as_ref().unwrap()));
-                if active {
-                    println!("Switching to a secure line...");
-                    frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
-                }
-                else {
-                    frames.push(build_frame(&None, Protocol::new_intro(&config)));
-                }
-            },
-            Protocol::Crypt { boottime, osversion } => {
-                conn.state = ConnState::Encrypted;
-                ctrltx.send(Control::NewConn(conn.nodename.clone(), tx.clone())).await.unwrap();
-
-                if active {
+                };
+                // let mut hex = String::with_capacity(n*2);
+                // for byte in &buf[0..n] { hex.push_str(&format!("{:02X} ", byte)); };
+                // println!("Received data: {}", hex);
+                collector.extend_from_slice(&buf[0..n]);
+                if collector.len() < 2 { continue; }
+                let framelen = (collector[1] as usize) << 8 | collector[0] as usize; // len is little-endian
+                if collector.len() < framelen+2 { continue; }
+                collector.drain(0..2); // Remove the length header
+                let mut frame: Vec<u8> = collector.drain(0..framelen).collect();
+                if conn.state != ConnState::New { // Frame will be encrypted
                     let config = config.read().unwrap();
                     let runtime = config.runtime.read().unwrap();
-                    let nodes = runtime.graph.raw_nodes();
-                    for edge in runtime.graph.raw_edges() {
-                        println!("{:?}", edge);
-                        // println!("{} -> {}", nodes[edge.source().into()].weight, nodes[edge.target().into()].weight);
+                    match decrypt_frame(&sbox, &frame[..]) {
+                        Ok(plaintext) => { frame = plaintext; },
+                        Err(e) => {
+                            eprintln!("Failed to decrypt message: {:?}; dropping connection to {}", e, conn.nodename);
+                            return;
+                        }
                     }
-                    frames.push(build_frame(&sbox, Protocol::Sync));
                 }
-                else {
-                    frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
+                let result: Result<Protocol, DecodeError> = rmp_serde::from_read_ref(&frame);
+                if let Err(ref e) = result {
+                    println!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename);
+                    return;
                 }
-            },
-            Protocol::Edge { from, to, ms } => {
+                let proto = result.unwrap();
+                println!("Received {:?}", proto);
+                let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10);
+                match proto {
+                    Protocol::Intro { version, name, pubkey } => {
+                        conn.nodename = name;
+                        conn.state = ConnState::Introduced;
 
-            },
-            Protocol::Sync => {
-                println!("Synchronized with {}", conn.nodename);
-                if !active {
-                    frames.push(build_frame(&sbox, Protocol::Sync));
+                        {
+                            let nodes = &config.read().unwrap().nodes;
+                            let node = nodes.iter().find(|&node| node.name == conn.nodename);
+                            if node.is_none() || (node.unwrap().pubkey != pubkey) {
+                                // let newnode = Node { name: conn.nodename.clone(), listen: vec![], pubkey };
+                                // config.write().unwrap().nodes.push(newnode);
+                                // node = config.read().unwrap().nodes.last()
+                                eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
+                                return;
+                            }
+                            let mut keybytes: [u8; 32] = [0; 32];
+                            keybytes.copy_from_slice(&base64::decode(pubkey).unwrap());
+                            conn.pubkey = Some(PublicKey::from(keybytes));
+                        }
+
+                        sbox = Some(SalsaBox::new(&conn.pubkey.as_ref().unwrap(), &config.read().unwrap().runtime.read().unwrap().privkey.as_ref().unwrap()));
+                        if active {
+                            println!("Switching to a secure line...");
+                            frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
+                        }
+                        else {
+                            frames.push(build_frame(&None, Protocol::new_intro(&config)));
+                        }
+                    },
+                    Protocol::Crypt { boottime, osversion } => {
+                        conn.state = ConnState::Encrypted;
+                        ctrltx.send(Control::NewConn(conn.nodename.clone(), tx.clone())).await.unwrap();
+
+                        if active {
+                            let config = config.read().unwrap();
+                            let runtime = config.runtime.read().unwrap();
+                            let nodes = runtime.graph.raw_nodes();
+                            for edge in runtime.graph.raw_edges() {
+                                println!("{:?}", edge);
+                                // println!("{} -> {}", nodes[edge.source().into()].weight, nodes[edge.target().into()].weight);
+                            }
+                            frames.push(build_frame(&sbox, Protocol::Sync));
+                        }
+                        else {
+                            frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
+                        }
+                    },
+                    Protocol::Edge { from, to, ms } => {
+
+                    },
+                    Protocol::Sync => {
+                        println!("Synchronized with {}", conn.nodename);
+                        if !active {
+                            frames.push(build_frame(&sbox, Protocol::Sync));
+                        }
+                        let config = config.read().unwrap();
+                        let mut runtime = config.runtime.write().unwrap();
+                        let node = match runtime.graph.node_indices().find(|i| runtime.graph[*i] == conn.nodename) {
+                            Some(idx) => idx,
+                            None => runtime.graph.add_node(conn.nodename.clone())
+                        };
+                        runtime.graph.update_edge(graph::NodeIndex::new(0), node, 1.0);
+                    }
+                }
+                for frame in frames {
+                    if socket.write_all(&frame).await.is_err() {
+                        eprintln!("Write error to {}", conn.nodename);
+                        break;
+                    }
                 }
             }
-        }
-        for frame in frames {
-            if socket.write_all(&frame).await.is_err() {
-                eprintln!("Write error to {}", conn.nodename);
-                break;
-            }
-        }
-     }
+        } // End of select! macro
+    }
 }
 
 async fn connect_all_nodes(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>) {
