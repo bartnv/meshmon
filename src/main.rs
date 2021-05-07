@@ -34,6 +34,8 @@ struct Node {
     listen: Vec<String>,
     pubkey: String,
     prio: u8,
+    #[serde(skip)]
+    connected: bool,
 }
 
 #[derive(Default)]
@@ -137,7 +139,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Initializing runtime data structures...");
     {
-        let config = config.read().unwrap();
+        let mut config = config.write().unwrap();
+        let mut prio = 1;
+        for node in config.nodes.iter_mut() {
+            node.prio = prio;
+            prio += 1;
+        }
         let mut runtime = config.runtime.write().unwrap();
         runtime.sysinfo = Some(sysinfo::System::new_all());
         runtime.sysinfo.as_mut().unwrap().refresh_all();
@@ -247,34 +254,31 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         conn.state = ConnState::Introduced;
 
                         {
-                            let config = config.read().unwrap();
-                            let nodes = &config.nodes;
-                            let node = nodes.iter().find(|&node| node.name == conn.nodename);
-                            if node.is_none() {
+                            let mut config = config.write().unwrap();
+                            let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
+                            if res.is_none() {
                                 // let newnode = Node { name: conn.nodename.clone(), listen: vec![], pubkey };
                                 // config.write().unwrap().nodes.push(newnode);
                                 // node = config.read().unwrap().nodes.last()
                                 eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
                                 return;
                             }
-                            if node.unwrap().pubkey != pubkey {
+                            let node = res.unwrap();
+                            if node.pubkey != pubkey {
                                 eprintln!("Connection received from node {} with changed pubkey ({})", conn.nodename, pubkey);
                                 return;
                             }
+                            if node.connected {
+                                eprintln!("Duplicate connection received from {}; dropping", conn.nodename);
+                                return;
+                            }
+                            node.connected = true;
                             let mut keybytes: [u8; 32] = [0; 32];
                             keybytes.copy_from_slice(&base64::decode(pubkey).unwrap());
                             conn.pubkey = Some(PublicKey::from(keybytes));
-                            conn.prio = node.unwrap().prio;
+                            conn.prio = node.prio;
 
                             sbox = Some(SalsaBox::new(&conn.pubkey.as_ref().unwrap(), &config.runtime.read().unwrap().privkey.as_ref().unwrap()));
-
-                            let runtime = config.runtime.read().unwrap();
-                            if let Some(node) = runtime.graph.find_node(&conn.nodename) {
-                                if runtime.graph.find_edge(mynode, node).is_some() {
-                                    eprintln!("Duplicate connection received from {}; dropping connection", conn.nodename);
-                                    break;
-                                }
-                            }
                         }
 
                         if active {
@@ -317,7 +321,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             Some(idx) => idx,
                             None => runtime.graph.add_node(conn.nodename.clone())
                         };
-                        runtime.graph.update_edge(graph::NodeIndex::new(0), node, weight);
+                        runtime.graph.update_edge(mynode, node, weight);
                     }
                 }
                 for frame in frames {
@@ -329,14 +333,16 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
             }
         } // End of select! macro
     }
-    // let nodes = &config.write().unwrap().nodes;
-    // let res = nodes.iter_mut().find(|&node| node.name == conn.nodename);
-    // if res.is_some() { res.unwrap().connected = false; }
+
+    let mut config = config.write().unwrap();
+    let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
+    if let Some(node) = res { node.connected = false; }
 }
 
 async fn connect_all_nodes(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>) {
     let mut targets: Vec<String> = vec![];
     for node in &config.read().unwrap().nodes {
+        if node.connected { continue; }
         for addr in &node.listen {
             targets.push(addr.clone());
         }
