@@ -8,12 +8,22 @@ use sysinfo::{SystemExt};
 use generic_array::GenericArray;
 use petgraph::{ Graph, graph };
 
+pub trait GraphExt {
+    fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
+}
+impl GraphExt for petgraph::Graph<String, u8> {
+    fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
+        self.node_indices().find(|i| self[*i] == name)
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Config {
     name: String,
     listen: Vec<String>,
     privkey: String,
     nodes: Vec<Node>,
+    targetpeers: u8,
     #[serde(skip)]
     runtime: RwLock<Runtime>,
 }
@@ -23,6 +33,7 @@ struct Node {
     name: String,
     listen: Vec<String>,
     pubkey: String,
+    prio: u8,
 }
 
 #[derive(Default)]
@@ -30,7 +41,7 @@ struct Runtime {
     privkey: Option<SecretKey>,
     pubkey: Option<PublicKey>,
     sysinfo: Option<sysinfo::System>,
-    graph: Graph<String, f32>,
+    graph: Graph<String, u8>,
 }
 
 #[derive(Debug)]
@@ -39,6 +50,7 @@ struct Connection {
     lastdata: time::Instant,
     state: ConnState,
     pubkey: Option<PublicKey>,
+    prio: u8,
 }
 impl Connection {
     fn new(nodename: String) -> Connection {
@@ -46,7 +58,8 @@ impl Connection {
             nodename,
             lastdata: time::Instant::now(),
             state: ConnState::New,
-            pubkey: None
+            pubkey: None,
+            prio: 0,
         }
     }
 }
@@ -67,8 +80,8 @@ enum Control {
 enum Protocol {
     Intro { version: u8, name: String, pubkey: String },
     Crypt { boottime: u64, osversion: String },
-    Edge { from: String, to: String, ms: f32 },
-    Sync,
+    Edge { from: String, to: String, weight: u8, ms: f32 },
+    Sync { weight: u8 },
 }
 impl Protocol {
     fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
@@ -102,6 +115,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 listen: vec!["0.0.0.0:7531".to_owned()],
                 privkey,
                 nodes: Vec::new(),
+                targetpeers: 3,
                 runtime: RwLock::new(Default::default()),
             }
         ));
@@ -181,6 +195,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     let mut sbox: Option<SalsaBox> = None;
     let mut buf = vec![0; 1500];
     let mut collector: Vec<u8> = vec![];
+    let mynode = graph::NodeIndex::new(0);
     loop {
         tokio::select!{
             res = ctrlrx.recv() => {
@@ -191,11 +206,11 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     Ok(n) if n > 0 => n,
                     Ok(_) => {
                         println!("Connection with {} closed", conn.nodename);
-                        return;
+                        break;
                     },
                     Err(_) => {
                         println!("Read error on connection with {}", conn.nodename);
-                        return;
+                        break;
                     }
                 };
                 // let mut hex = String::with_capacity(n*2);
@@ -214,14 +229,14 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         Ok(plaintext) => { frame = plaintext; },
                         Err(e) => {
                             eprintln!("Failed to decrypt message: {:?}; dropping connection to {}", e, conn.nodename);
-                            return;
+                            break;
                         }
                     }
                 }
                 let result: Result<Protocol, DecodeError> = rmp_serde::from_read_ref(&frame);
                 if let Err(ref e) = result {
                     println!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename);
-                    return;
+                    break;
                 }
                 let proto = result.unwrap();
                 println!("Received {:?}", proto);
@@ -232,21 +247,36 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         conn.state = ConnState::Introduced;
 
                         {
-                            let nodes = &config.read().unwrap().nodes;
+                            let config = config.read().unwrap();
+                            let nodes = &config.nodes;
                             let node = nodes.iter().find(|&node| node.name == conn.nodename);
-                            if node.is_none() || (node.unwrap().pubkey != pubkey) {
+                            if node.is_none() {
                                 // let newnode = Node { name: conn.nodename.clone(), listen: vec![], pubkey };
                                 // config.write().unwrap().nodes.push(newnode);
                                 // node = config.read().unwrap().nodes.last()
                                 eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
                                 return;
                             }
+                            if node.unwrap().pubkey != pubkey {
+                                eprintln!("Connection received from node {} with changed pubkey ({})", conn.nodename, pubkey);
+                                return;
+                            }
                             let mut keybytes: [u8; 32] = [0; 32];
                             keybytes.copy_from_slice(&base64::decode(pubkey).unwrap());
                             conn.pubkey = Some(PublicKey::from(keybytes));
+                            conn.prio = node.unwrap().prio;
+
+                            sbox = Some(SalsaBox::new(&conn.pubkey.as_ref().unwrap(), &config.runtime.read().unwrap().privkey.as_ref().unwrap()));
+
+                            let runtime = config.runtime.read().unwrap();
+                            if let Some(node) = runtime.graph.find_node(&conn.nodename) {
+                                if runtime.graph.find_edge(mynode, node).is_some() {
+                                    eprintln!("Duplicate connection received from {}; dropping connection", conn.nodename);
+                                    break;
+                                }
+                            }
                         }
 
-                        sbox = Some(SalsaBox::new(&conn.pubkey.as_ref().unwrap(), &config.read().unwrap().runtime.read().unwrap().privkey.as_ref().unwrap()));
                         if active {
                             println!("Switching to a secure line...");
                             frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
@@ -267,27 +297,27 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 println!("{:?}", edge);
                                 // println!("{} -> {}", nodes[edge.source().into()].weight, nodes[edge.target().into()].weight);
                             }
-                            frames.push(build_frame(&sbox, Protocol::Sync));
+                            frames.push(build_frame(&sbox, Protocol::Sync { weight: conn.prio }));
                         }
                         else {
                             frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
                         }
                     },
-                    Protocol::Edge { from, to, ms } => {
+                    Protocol::Edge { from, to, weight, ms } => {
 
                     },
-                    Protocol::Sync => {
+                    Protocol::Sync { weight }=> {
                         println!("Synchronized with {}", conn.nodename);
                         if !active {
-                            frames.push(build_frame(&sbox, Protocol::Sync));
+                            frames.push(build_frame(&sbox, Protocol::Sync { weight }));
                         }
                         let config = config.read().unwrap();
                         let mut runtime = config.runtime.write().unwrap();
-                        let node = match runtime.graph.node_indices().find(|i| runtime.graph[*i] == conn.nodename) {
+                        let node = match runtime.graph.find_node(&conn.nodename) {
                             Some(idx) => idx,
                             None => runtime.graph.add_node(conn.nodename.clone())
                         };
-                        runtime.graph.update_edge(graph::NodeIndex::new(0), node, 1.0);
+                        runtime.graph.update_edge(graph::NodeIndex::new(0), node, weight);
                     }
                 }
                 for frame in frames {
@@ -299,6 +329,9 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
             }
         } // End of select! macro
     }
+    // let nodes = &config.write().unwrap().nodes;
+    // let res = nodes.iter_mut().find(|&node| node.name == conn.nodename);
+    // if res.is_some() { res.unwrap().connected = false; }
 }
 
 async fn connect_all_nodes(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>) {
