@@ -75,6 +75,7 @@ enum ConnState {
 }
 #[derive(Debug)]
 enum Control {
+    Tick,
     NewConn(String, sync::mpsc::Sender<Control>),
 }
 
@@ -171,14 +172,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
     }
 
+    let timertx = tx.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            timertx.send(Control::Tick).await.unwrap();
+        }
+    });
+
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
-        connect_all_nodes(aconfig, tx.clone()).await;
         loop {
-            if let Some(ctrl) = rx.recv().await {
-                println!("Received control message {:?}", ctrl);
+            let config = aconfig.clone();
+            match rx.recv().await.unwrap() {
+                Control::Tick => {
+                    println!("Tick");
+                    let mut ports: Vec<String> = vec![];
+                    {
+                        let config = config.read().unwrap();
+                        let count = config.nodes.iter().filter(|i| i.connected).count();
+                        if count < config.targetpeers.into() {
+                            for node in &config.nodes {
+                                if node.connected { continue; }
+                                for addr in &node.listen {
+                                    ports.push(addr.clone());
+                                }
+                                break;
+                            }
+                            if ports.is_empty() {
+                                println!("Number of peers ({}) is below target number ({}), but I have no more nodes", count, config.targetpeers);
+                            }
+                        }
+                    }
+                    if !ports.is_empty() {
+                        connect_node(config, tx.clone(), ports).await;
+                    }
+                },
+                ctrl => println!("Received control message {:?}", ctrl)
             }
-            else { break; } // All Senders are gone... shouldn't happen
         }
     });
     let (res,) = tokio::join!(control);
@@ -339,15 +371,8 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     if let Some(node) = res { node.connected = false; }
 }
 
-async fn connect_all_nodes(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>) {
-    let mut targets: Vec<String> = vec![];
-    for node in &config.read().unwrap().nodes {
-        if node.connected { continue; }
-        for addr in &node.listen {
-            targets.push(addr.clone());
-        }
-    }
-    for addr in targets {
+async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>) {
+    for addr in ports {
         println!("Connecting to {}", addr);
         match net::TcpStream::connect(&addr).await {
             Ok(mut stream) => {
