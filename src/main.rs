@@ -2,11 +2,13 @@
 use crypto_box::{aead::Aead, PublicKey, SalsaBox, SecretKey};
 use serde_derive::{Deserialize, Serialize};
 use rmp_serde::decode::Error as DecodeError;
-use std::{str, time, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto};
+use std::{str, time, env, future::Future, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto};
 use tokio::{fs, net, sync, io::AsyncReadExt, io::AsyncWriteExt};
 use sysinfo::{SystemExt};
 use generic_array::GenericArray;
-use petgraph::{ Graph, graph };
+use petgraph::{ Graph, graph, dot };
+
+const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
@@ -24,6 +26,7 @@ struct Config {
     privkey: String,
     nodes: Vec<Node>,
     targetpeers: u8,
+    dotfile: Option<String>,
     #[serde(skip)]
     runtime: RwLock<Runtime>,
 }
@@ -107,6 +110,7 @@ impl Protocol {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    println!("Starting watcher {}", VERSION);
     let args: Vec<String> = env::args().collect();
     let config: Arc<RwLock<Config>>;
     if args.contains(&"--init".to_owned()) {
@@ -119,6 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 privkey,
                 nodes: Vec::new(),
                 targetpeers: 3,
+                dotfile: None,
                 runtime: RwLock::new(Default::default()),
             }
         ));
@@ -204,10 +209,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 println!("Number of peers ({}) is below target number ({}), but I have no more nodes", count, config.targetpeers);
                             }
                         }
+                        if let Some(file) = &config.dotfile {
+                            let runtime = config.runtime.read().unwrap();
+                            let file = file.clone();
+                            let data = format!("{:?}", dot::Dot::with_config(&runtime.graph, &[]));
+                            tokio::spawn(async move {
+                                fs::write(file, data).await.unwrap_or_else(|e| eprintln!("Failed to write dotfile: {}", e));
+                            });
+                        }
                     }
+
                     if !ports.is_empty() {
-                        connect_node(config, tx.clone(), ports).await;
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            connect_node(config, tx, ports).await;
+                        });
                     }
+
                 },
                 ctrl => println!("Received control message {:?}", ctrl)
             }
@@ -384,6 +402,7 @@ async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<C
                 tokio::spawn(async move {
                     run_tcp(config, stream, control, true).await;
                 });
+                return;
             },
             Err(e) => println!("Error connecting to {}: {}", addr, e)
         }
