@@ -86,7 +86,7 @@ enum Control {
 enum Protocol {
     Intro { version: u8, name: String, pubkey: String },
     Crypt { boottime: u64, osversion: String },
-    Edge { from: String, to: String, weight: u8, ms: f32 },
+    Link { from: String, to: String, prio: u8 },
     Sync { weight: u8 },
 }
 impl Protocol {
@@ -363,10 +363,8 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         if active {
                             let config = config.read().unwrap();
                             let runtime = config.runtime.read().unwrap();
-                            let nodes = runtime.graph.raw_nodes();
                             for edge in runtime.graph.raw_edges() {
-                                println!("{:?}", edge);
-                                // println!("{} -> {}", nodes[edge.source().into()].weight, nodes[edge.target().into()].weight);
+                                frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
                             }
                             frames.push(build_frame(&sbox, Protocol::Sync { weight: conn.prio }));
                         }
@@ -374,12 +372,17 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
                         }
                     },
-                    Protocol::Edge { from, to, weight, ms } => {
+                    Protocol::Link { from, to, prio } => {
 
                     },
                     Protocol::Sync { weight }=> {
                         println!("Synchronized with {}", conn.nodename);
                         if !active {
+                            let config = config.read().unwrap();
+                            let runtime = config.runtime.read().unwrap();
+                            for edge in runtime.graph.raw_edges() {
+                                frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                            }
                             frames.push(build_frame(&sbox, Protocol::Sync { weight }));
                         }
                         let config = config.read().unwrap();
