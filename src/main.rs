@@ -6,14 +6,14 @@ use std::{str, time, env, future::Future, default::Default, sync::RwLock, error:
 use tokio::{fs, net, sync, io::AsyncReadExt, io::AsyncWriteExt};
 use sysinfo::{SystemExt};
 use generic_array::GenericArray;
-use petgraph::{ Graph, graph, dot };
+use petgraph::{ graph, dot };
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
 }
-impl GraphExt for petgraph::Graph<String, u8> {
+impl GraphExt for graph::UnGraph<String, u8> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
         self.node_indices().find(|i| self[*i] == name)
     }
@@ -46,7 +46,7 @@ struct Runtime {
     privkey: Option<SecretKey>,
     pubkey: Option<PublicKey>,
     sysinfo: Option<sysinfo::System>,
-    graph: Graph<String, u8>,
+    graph: graph::UnGraph<String, u8>,
 }
 
 #[derive(Debug)]
@@ -189,13 +189,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
         loop {
-            let config = aconfig.clone();
             match rx.recv().await.unwrap() {
                 Control::Tick => {
                     println!("Tick");
                     let mut ports: Vec<String> = vec![];
                     {
-                        let config = config.read().unwrap();
+                        let config = aconfig.read().unwrap();
                         let count = config.nodes.iter().filter(|i| i.connected).count();
                         if count < config.targetpeers.into() {
                             for node in &config.nodes {
@@ -208,24 +207,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             if ports.is_empty() {
                                 println!("Number of peers ({}) is below target number ({}), but I have no more nodes", count, config.targetpeers);
                             }
+                            else {
+                                let config = aconfig.clone();
+                                let tx = tx.clone();
+                                tokio::spawn(async move {
+                                    connect_node(config, tx, ports).await;
+                                });
+                            }
                         }
                         if let Some(file) = &config.dotfile {
                             let runtime = config.runtime.read().unwrap();
                             let file = file.clone();
-                            let data = format!("{:?}", dot::Dot::with_config(&runtime.graph, &[]));
+                            let data = format!("{:?}", dot::Dot::with_config(&runtime.graph, &[dot::Config::EdgeNoLabel]));
                             tokio::spawn(async move {
                                 fs::write(file, data).await.unwrap_or_else(|e| eprintln!("Failed to write dotfile: {}", e));
                             });
                         }
                     }
-
-                    if !ports.is_empty() {
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            connect_node(config, tx, ports).await;
-                        });
-                    }
-
                 },
                 ctrl => println!("Received control message {:?}", ctrl)
             }
