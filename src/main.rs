@@ -7,6 +7,7 @@ use tokio::{fs, net, sync, io::AsyncReadExt, io::AsyncWriteExt};
 use sysinfo::{SystemExt};
 use generic_array::GenericArray;
 use petgraph::{ graph, dot };
+use clap::{ Arg, App, SubCommand };
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -72,7 +73,7 @@ impl Connection {
             state: ConnState::New,
             pubkey: None,
             prio: 0,
-            rtt: NaN,
+            rtt: f32::NAN,
         }
     }
 }
@@ -118,15 +119,22 @@ impl Protocol {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    println!("Starting watcher {}", VERSION);
-    let args: Vec<String> = env::args().collect();
+    let args = App::new("watcher")
+        .version(VERSION)
+        .author("Bart Noordervliet <bart@mmvi.nl>")
+        .about("A distributed network monitor")
+        .subcommand(SubCommand::with_name("init")
+            .about("Create a new configuration file and exit")
+            .arg(Arg::with_name("name").long("name").takes_value(true).help("The name for this node"))
+        )
+        .get_matches();
     let config: Arc<RwLock<Config>>;
-    if args.contains(&"--init".to_owned()) {
+    if let Some(args) = args.subcommand_matches("init") {
         let mut rng = rand::rngs::OsRng;
         let privkey = base64::encode(SecretKey::generate(&mut rng).to_bytes());
         config = Arc::new(RwLock::new(
             Config {
-                name: String::from("MyName"),
+                name: args.value_of("name").unwrap_or("MyName").to_string(),
                 listen: vec!["0.0.0.0:7531".to_owned()],
                 privkey,
                 nodes: Vec::new(),
@@ -136,9 +144,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         ));
         write_config(&*config.read().unwrap()).await?;
+        return Ok(());
     }
     else { config = Arc::new(RwLock::new(toml::from_str(&fs::read_to_string("config.toml").await?)?)); }
 
+    println!("Starting watcher {}", VERSION);
     {
         let rawkey: [u8; 32] = base64::decode(&config.read().unwrap().privkey)?
         .as_slice()
