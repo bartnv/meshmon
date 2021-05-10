@@ -62,6 +62,7 @@ struct Connection {
     state: ConnState,
     pubkey: Option<PublicKey>,
     prio: u8,
+    rtt: f32,
 }
 impl Connection {
     fn new(nodename: String) -> Connection {
@@ -71,6 +72,7 @@ impl Connection {
             state: ConnState::New,
             pubkey: None,
             prio: 0,
+            rtt: NaN,
         }
     }
 }
@@ -297,6 +299,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                 // for byte in &buf[0..n] { hex.push_str(&format!("{:02X} ", byte)); };
                 // println!("Received data: {}", hex);
                 collector.extend_from_slice(&buf[0..n]);
+                conn.lastdata = time::Instant::now();
                 loop {
                     if collector.len() < 2 { continue 'select; }
                     let framelen = (collector[1] as usize) << 8 | collector[0] as usize; // len is little-endian
