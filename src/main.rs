@@ -19,9 +19,9 @@ impl GraphExt for graph::UnGraph<String, u8> {
         self.node_indices().find(|i| self[*i] == name)
     }
     fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> graph::EdgeIndex {
-        let from = self.find_node(from).unwrap_or(self.add_node(from.to_string()));
-        let to = self.find_node(to).unwrap_or(self.add_node(to.to_string()));
-        self.add_edge(from, to, weight)
+        let from = self.find_node(from).unwrap_or_else(|| self.add_node(from.to_string()));
+        let to = self.find_node(to).unwrap_or_else(|| self.add_node(to.to_string()));
+        self.update_edge(from, to, weight)
     }
 }
 
@@ -384,7 +384,6 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         runtime.graph.add_edge_from_names(&from, &to, prio);
                     },
                     Protocol::Sync { weight }=> {
-                        println!("Synchronized with {}", conn.nodename);
                         if !active {
                             let config = config.read().unwrap();
                             let runtime = config.runtime.read().unwrap();
@@ -400,6 +399,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             None => runtime.graph.add_node(conn.nodename.clone())
                         };
                         runtime.graph.update_edge(mynode, node, weight);
+                        println!("Synchronized with {}", conn.nodename);
                     }
                 }
                 for frame in frames {
@@ -415,6 +415,12 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     let mut config = config.write().unwrap();
     let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
     if let Some(node) = res { node.connected = false; }
+    let mut runtime = config.runtime.write().unwrap();
+    if let Some(idx) = runtime.graph.find_node(&conn.nodename) {
+        if let Some(edge) = runtime.graph.find_edge(mynode, idx) {
+            runtime.graph.remove_edge(edge);
+        }
+    }
 }
 
 async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>) {
