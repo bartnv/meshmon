@@ -188,6 +188,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
+        let mut nodeidx = 0;
         loop {
             match rx.recv().await.unwrap() {
                 Control::Tick => {
@@ -197,15 +198,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let config = aconfig.read().unwrap();
                         let count = config.nodes.iter().filter(|i| i.connected).count();
                         if count < config.targetpeers.into() {
-                            for node in &config.nodes {
-                                if node.connected { continue; }
+                            if let Some(idx) = find_next_node(&config.nodes, nodeidx) {
+                                nodeidx = idx;
+                                let node = config.nodes.get(nodeidx).unwrap();
                                 for addr in &node.listen {
                                     ports.push(addr.clone());
                                 }
-                                break;
                             }
                             if ports.is_empty() {
-                                println!("Number of peers ({}) is below target number ({}), but I have no more nodes", count, config.targetpeers);
+                                println!("Number of peers ({}) is below target number ({}), but I have no more available nodes", count, config.targetpeers);
                             }
                             else {
                                 let config = aconfig.clone();
@@ -234,6 +235,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::time::sleep(time::Duration::from_secs(900)).await;
     write_config(&(*config).read().unwrap()).await?;
     Ok(())
+}
+
+fn find_next_node(nodes: &Vec<Node>, start: usize) -> Option<usize> {
+    if nodes.is_empty() { return None; }
+    let mut idx = start;
+    let mut once = false;
+    loop {
+        if idx == start {
+            if once { return None; }
+            once = true;
+        }
+        idx += 1;
+        if idx >= nodes.len() { idx = 0; }
+        let node = nodes.get(idx).unwrap();
+        if node.connected { continue; }
+        if node.listen.is_empty() { continue; }
+        return Some(idx);
+    }
 }
 
 async fn write_config(config: &Config) -> Result<(), Box<dyn Error>> {
