@@ -12,10 +12,16 @@ const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
+    fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> graph::EdgeIndex;
 }
 impl GraphExt for graph::UnGraph<String, u8> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
         self.node_indices().find(|i| self[*i] == name)
+    }
+    fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> graph::EdgeIndex {
+        let from = self.find_node(from).unwrap_or(self.add_node(from.to_string()));
+        let to = self.find_node(to).unwrap_or(self.add_node(to.to_string()));
+        self.add_edge(from, to, weight)
     }
 }
 
@@ -373,7 +379,9 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         }
                     },
                     Protocol::Link { from, to, prio } => {
-
+                        let config = config.read().unwrap();
+                        let mut runtime = config.runtime.write().unwrap();
+                        runtime.graph.add_edge_from_names(&from, &to, prio);
                     },
                     Protocol::Sync { weight }=> {
                         println!("Synchronized with {}", conn.nodename);
