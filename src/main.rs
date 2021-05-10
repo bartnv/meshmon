@@ -188,7 +188,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
-        let mut nodeidx = 0;
+        let mut nodeidx = usize::MAX-1;
         loop {
             match rx.recv().await.unwrap() {
                 Control::Tick => {
