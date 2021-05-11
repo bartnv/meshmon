@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports, unused_variables, unused_mut)] // Please be quiet, I'm coding
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{aead::Aead, PublicKey, SalsaBox, SecretKey};
 use serde_derive::{Deserialize, Serialize};
 use rmp_serde::decode::Error as DecodeError;
@@ -88,7 +88,7 @@ enum ConnState {
 #[derive(Debug)]
 enum Control {
     Tick,
-    NewConn(String, sync::mpsc::Sender<Control>),
+    NewPeer(String, sync::mpsc::Sender<Control>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -175,7 +175,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.graph.add_node(config.name.clone());
     }
 
-    let (tx, mut rx) = sync::mpsc::channel(10);
+    // TCP listen ports; accepts connections and spawns a task to run the TCP protocol on them
+    let (tx, mut rx) = sync::mpsc::channel(10); // Channel used to send updates to the control task
     for port in &config.read().unwrap().listen {
         let tx = tx.clone();
         let config = config.clone();
@@ -195,6 +196,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
     }
 
+    // Timer loop; sends Tick messages to the control task at regular intervals
     let timertx = tx.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -204,6 +206,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    // Control task; handles coordinating jobs
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
         let mut nodeidx = usize::MAX-1;
@@ -244,6 +247,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 },
+                Control::NewPeer(name, tx) => {
+                    println!("Received NewPeer Control message for {}", name);
+                    let config = aconfig.read().unwrap();
+                    let runtime = config.runtime.read().unwrap();
+                    for item in petgraph::algo::min_spanning_tree(&runtime.graph) {
+                        println!("{:?}", item);
+                    }
+                }
                 ctrl => println!("Received control message {:?}", ctrl)
             }
         }
@@ -378,7 +389,6 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         },
                         Protocol::Crypt { boottime, osversion } => {
                             conn.state = ConnState::Encrypted;
-                            ctrltx.send(Control::NewConn(conn.nodename.clone(), tx.clone())).await.unwrap();
 
                             if active {
                                 let config = config.read().unwrap();
@@ -398,22 +408,24 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             runtime.graph.add_edge_from_names(&from, &to, prio);
                         },
                         Protocol::Sync { weight }=> {
-                            if !active {
+                            {
                                 let config = config.read().unwrap();
-                                let runtime = config.runtime.read().unwrap();
-                                for edge in runtime.graph.raw_edges() {
-                                    frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                let mut runtime = config.runtime.write().unwrap();
+                                if !active {
+                                    for edge in runtime.graph.raw_edges() {
+                                        frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                    }
+                                    frames.push(build_frame(&sbox, Protocol::Sync { weight }));
                                 }
-                                frames.push(build_frame(&sbox, Protocol::Sync { weight }));
+                                let node = match runtime.graph.find_node(&conn.nodename) {
+                                    Some(idx) => idx,
+                                    None => runtime.graph.add_node(conn.nodename.clone())
+                                };
+                                runtime.graph.update_edge(mynode, node, weight);
                             }
-                            let config = config.read().unwrap();
-                            let mut runtime = config.runtime.write().unwrap();
-                            let node = match runtime.graph.find_node(&conn.nodename) {
-                                Some(idx) => idx,
-                                None => runtime.graph.add_node(conn.nodename.clone())
-                            };
-                            runtime.graph.update_edge(mynode, node, weight);
                             println!("Synchronized with {}", conn.nodename);
+                            conn.state = ConnState::Synchronized;
+                            ctrltx.send(Control::NewPeer(conn.nodename.clone(), tx.clone())).await.unwrap();
                         }
                     }
                     for frame in frames {
