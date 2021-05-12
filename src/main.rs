@@ -30,7 +30,6 @@ impl GraphExt for UnGraph<String, u8> {
                 self[idx] = weight;
             },
             None => {
-                println!("Adding {:?} -> {:?} ({})", from, to, weight);
                 self.add_edge(from, to, weight);
             }
         }
@@ -512,8 +511,8 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     Some(idx) => idx,
                                     None => runtime.graph.add_node(conn.nodename.clone())
                                 };
-                                println!("Adding {:?} -> {:?} ({})", mynode, node, weight);
-                                runtime.graph.update_edge(mynode, node, weight);
+                                if active { runtime.graph.update_edge(mynode, node, weight); }
+                                else { runtime.graph.update_edge(node, mynode, weight); }
                                 runtime.graph.print();
                             }
                             println!("Synchronized with {}", conn.nodename);
