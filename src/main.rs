@@ -2,27 +2,50 @@
 use crypto_box::{aead::Aead, PublicKey, SalsaBox, SecretKey};
 use serde_derive::{Deserialize, Serialize};
 use rmp_serde::decode::Error as DecodeError;
-use std::{str, time, env, future::Future, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto};
+use std::{str, time, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
 use tokio::{fs, net, sync, io::AsyncReadExt, io::AsyncWriteExt};
 use sysinfo::{SystemExt};
 use generic_array::GenericArray;
-use petgraph::{ graph, dot };
+use petgraph::{ graph, graph::UnGraph, dot, data::FromElements };
 use clap::{ Arg, App, SubCommand };
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
-    fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> graph::EdgeIndex;
+    fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> bool;
+    fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool;
+    fn print(&self);
 }
-impl GraphExt for graph::UnGraph<String, u8> {
+impl GraphExt for UnGraph<String, u8> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
         self.node_indices().find(|i| self[*i] == name)
     }
-    fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> graph::EdgeIndex {
+    fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> bool {
         let from = self.find_node(from).unwrap_or_else(|| self.add_node(from.to_string()));
         let to = self.find_node(to).unwrap_or_else(|| self.add_node(to.to_string()));
-        self.update_edge(from, to, weight)
+        match self.find_edge(from, to) {
+            Some(idx) => {
+                if self[idx] == weight { return false; }
+                self[idx] = weight;
+            },
+            None => {
+                println!("Adding {:?} -> {:?} ({})", from, to, weight);
+                self.add_edge(from, to, weight);
+            }
+        }
+        true
+    }
+    fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool {
+        match self.find_node(to) {
+            None => false,
+            Some(node) => petgraph::algo::has_path_connecting(self, from, node, None)
+        }
+    }
+    fn print(&self) {
+        for edge in self.raw_edges().iter() {
+            println!("Edge: {} -> {} ({})", self[edge.source()], self[edge.target()], edge.weight);
+        }
     }
 }
 
@@ -53,7 +76,7 @@ struct Runtime {
     privkey: Option<SecretKey>,
     pubkey: Option<PublicKey>,
     sysinfo: Option<sysinfo::System>,
-    graph: graph::UnGraph<String, u8>,
+    graph: UnGraph<String, u8>,
 }
 
 #[derive(Debug)]
@@ -77,21 +100,22 @@ impl Connection {
         }
     }
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, PartialOrd)]
 enum ConnState {
     New,
     Introduced,
     Encrypted,
     Synchronized,
-    Closed,
 }
 #[derive(Debug)]
 enum Control {
     Tick,
-    NewPeer(String, sync::mpsc::Sender<Control>),
+    NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for reverse control messages back to the connection task)
+    Relay(String, Protocol), // Sender node, protocol message to relay
+    Send(Protocol), // Protocol message to send
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 enum Protocol {
     Intro { version: u8, name: String, pubkey: String },
     Crypt { boottime: u64, osversion: String },
@@ -209,7 +233,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Control task; handles coordinating jobs
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
+        let mut peers = HashMap::new();
         let mut nodeidx = usize::MAX-1;
+        let mut msp = graph::Graph::new_undirected();
         loop {
             match rx.recv().await.unwrap() {
                 Control::Tick => {
@@ -251,11 +277,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("Received NewPeer Control message for {}", name);
                     let config = aconfig.read().unwrap();
                     let runtime = config.runtime.read().unwrap();
-                    for item in petgraph::algo::min_spanning_tree(&runtime.graph) {
-                        println!("{:?}", item);
-                    }
+                    msp = calculate_msp(&runtime.graph);
+                    peers.insert(name, tx);
                 }
-                ctrl => println!("Received control message {:?}", ctrl)
+                Control::Relay(from, protocol) => {
+                    let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
+                    for peer in msp.neighbors(graph::NodeIndex::new(0)) {
+                        if msp[peer] == from { continue; }
+                        match peers.get(&msp[peer]) {
+                            Some(tx) => {
+                                println!("Relaying {:?} to {}", protocol, msp[peer]);
+                                targets.push(tx.clone());
+                            },
+                            None => {
+                                println!("Peer {} not found", msp[peer]);
+                            }
+                        }
+
+                    }
+                    if !targets.is_empty() {
+                        tokio::spawn(async move {
+                            for tx in targets {
+                                let proto = protocol.clone();
+                                tx.send(Control::Send(proto)).await.unwrap();
+                            }
+                        });
+                    }
+                },
+                _ => {
+                    panic!("Received unexpected Control message on control task");
+                }
             }
         }
     });
@@ -283,6 +334,9 @@ fn find_next_node(nodes: &Vec<Node>, start: usize) -> Option<usize> {
         return Some(idx);
     }
 }
+fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
+    graph::Graph::from_elements(petgraph::algo::min_spanning_tree(&graph))
+}
 
 async fn write_config(config: &Config) -> Result<(), Box<dyn Error>> {
     fs::write("config.toml", toml::to_string_pretty(&config)?).await?;
@@ -299,10 +353,26 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     let mut buf = vec![0; 1500];
     let mut collector: Vec<u8> = vec![];
     let mynode = graph::NodeIndex::new(0);
+    let myname = {
+        let config = config.read().unwrap();
+        config.name.clone()
+    };
+    let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10);
     'select: loop {
         tokio::select!{
             res = ctrlrx.recv() => {
-                println!("Received control message {:?}", res.unwrap());
+                if conn.state < ConnState::Synchronized {
+                    eprintln!("Received Control message on tcp task before synchronization; ignoring");
+                    continue;
+                }
+                match res.unwrap() {
+                    Control::Send(proto) => {
+                        frames.push(build_frame(&sbox, proto));
+                    },
+                    _ => {
+                        panic!("Received unexpected Control message on control task");
+                    }
+                }
             }
             res = socket.read(&mut buf) => {
                 let n = match res {
@@ -322,14 +392,14 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                 collector.extend_from_slice(&buf[0..n]);
                 conn.lastdata = time::Instant::now();
                 loop {
-                    if collector.len() < 2 { continue 'select; }
+                    // In this loop, a regular break will restart the select!{} macro, a "break 'select" will
+                    // exit the function *with* cleanup and a return will exit the function without cleanup
+                    if collector.len() < 2 { break; }
                     let framelen = (collector[1] as usize) << 8 | collector[0] as usize; // len is little-endian
-                    if collector.len() < framelen+2 { continue 'select; }
+                    if collector.len() < framelen+2 { break; }
                     collector.drain(0..2); // Remove the length header
                     let mut frame: Vec<u8> = collector.drain(0..framelen).collect();
                     if conn.state != ConnState::New { // Frame will be encrypted
-                        let config = config.read().unwrap();
-                        let runtime = config.runtime.read().unwrap();
                         match decrypt_frame(&sbox, &frame[..]) {
                             Ok(plaintext) => { frame = plaintext; },
                             Err(e) => {
@@ -345,7 +415,6 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     }
                     let proto = result.unwrap();
                     println!("Received {:?}", proto);
-                    let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10);
                     match proto {
                         Protocol::Intro { version, name, pubkey } => {
                             conn.nodename = name;
@@ -388,14 +457,21 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                         },
                         Protocol::Crypt { boottime, osversion } => {
+                            if conn.state != ConnState::Introduced {
+                                eprintln!("Protocol desync: received Crypt before Intro from {}; dropping", conn.nodename);
+                                return;
+                            }
                             conn.state = ConnState::Encrypted;
 
                             if active {
                                 let config = config.read().unwrap();
                                 let runtime = config.runtime.read().unwrap();
-                                for edge in runtime.graph.raw_edges() {
-                                    frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                if !runtime.graph.has_path(mynode, &conn.nodename) {
+                                    for edge in runtime.graph.raw_edges() { // TODO: change to a petgraph::visit function
+                                        frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                    }
                                 }
+                                else { println!("Not sending links to already-connected node {}", conn.nodename); }
                                 frames.push(build_frame(&sbox, Protocol::Sync { weight: conn.prio }));
                             }
                             else {
@@ -403,50 +479,81 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                         },
                         Protocol::Link { from, to, prio } => {
-                            let config = config.read().unwrap();
-                            let mut runtime = config.runtime.write().unwrap();
-                            runtime.graph.add_edge_from_names(&from, &to, prio);
+                            let relay;
+                            if conn.state < ConnState::Encrypted {
+                                eprintln!("Protocol desync: received Link before Crypt from {}; dropping", conn.nodename);
+                                return;
+                            }
+                            {
+                                let config = config.read().unwrap();
+                                let mut runtime = config.runtime.write().unwrap();
+                                relay = runtime.graph.add_edge_from_names(&from, &to, prio); // True if a change was made
+                            }
+                            if relay { ctrltx.send(Control::Relay(conn.nodename.clone(), Protocol::Link { from, to, prio })).await.unwrap(); }
                         },
-                        Protocol::Sync { weight }=> {
+                        Protocol::Sync { weight } => {
+                            if conn.state < ConnState::Encrypted {
+                                eprintln!("Protocol desync: received Sync before Crypt from {}; dropping", conn.nodename);
+                                return;
+                            }
                             {
                                 let config = config.read().unwrap();
                                 let mut runtime = config.runtime.write().unwrap();
                                 if !active {
-                                    for edge in runtime.graph.raw_edges() {
-                                        frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                    if !runtime.graph.has_path(mynode, &conn.nodename) {
+                                        for edge in runtime.graph.raw_edges() {
+                                            frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                        }
                                     }
+                                    else { println!("Not sending links to already-connected node {}", conn.nodename); }
                                     frames.push(build_frame(&sbox, Protocol::Sync { weight }));
                                 }
                                 let node = match runtime.graph.find_node(&conn.nodename) {
                                     Some(idx) => idx,
                                     None => runtime.graph.add_node(conn.nodename.clone())
                                 };
+                                println!("Adding {:?} -> {:?} ({})", mynode, node, weight);
                                 runtime.graph.update_edge(mynode, node, weight);
+                                runtime.graph.print();
                             }
                             println!("Synchronized with {}", conn.nodename);
                             conn.state = ConnState::Synchronized;
+                            let myname = myname.clone();
+                            ctrltx.send(Control::Relay(conn.nodename.clone(), Protocol::Link { from: myname, to: conn.nodename.clone(), prio: weight })).await.unwrap();
                             ctrltx.send(Control::NewPeer(conn.nodename.clone(), tx.clone())).await.unwrap();
-                        }
-                    }
-                    for frame in frames {
-                        if socket.write_all(&frame).await.is_err() {
-                            eprintln!("Write error to {}", conn.nodename);
-                            break 'select;
                         }
                     }
                 } // End of loop over protocol messages
             } // End of socket.read() block
         } // End of select! macro
+        if !frames.is_empty() {
+            for frame in &frames {
+                if socket.write_all(&frame).await.is_err() {
+                    eprintln!("Write error to {}", conn.nodename);
+                    break;
+                }
+            }
+            frames.clear();
+        }
     } // End of select loop
 
     let mut config = config.write().unwrap();
     let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
     if let Some(node) = res { node.connected = false; }
     let mut runtime = config.runtime.write().unwrap();
-    if let Some(idx) = runtime.graph.find_node(&conn.nodename) {
-        if let Some(edge) = runtime.graph.find_edge(mynode, idx) {
+    if let Some(nodeidx) = runtime.graph.find_node(&conn.nodename) {
+        if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
             runtime.graph.remove_edge(edge);
         }
+        let scc = petgraph::algo::kosaraju_scc(&runtime.graph);
+        for group in scc {
+            if group.contains(&nodeidx) {
+                if group.len() > 1 { println!("Lost {} nodes behind {}", group.len()-1, conn.nodename); }
+                runtime.graph.retain_edges(|g, edgeidx| !group.contains(&g.edge_endpoints(edgeidx).unwrap().0));
+                break;
+            }
+        }
+        runtime.graph.print();
     }
 }
 
@@ -471,7 +578,7 @@ async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<C
 }
 
 fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
-    println!("Sending {:?}", proto);
+    // println!("Sending {:?}", proto);
     let payload = match sbox {
         Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
         None => rmp_serde::to_vec(&proto).unwrap()
