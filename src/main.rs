@@ -517,8 +517,11 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                             println!("Synchronized with {}", conn.nodename);
                             conn.state = ConnState::Synchronized;
-                            let myname = myname.clone();
-                            ctrltx.send(Control::Relay(conn.nodename.clone(), Protocol::Link { from: myname, to: conn.nodename.clone(), prio: weight })).await.unwrap();
+                            let link = match active {
+                                true => Protocol::Link { from: myname.clone(), to: conn.nodename.clone(), prio: weight },
+                                false => Protocol::Link { from: conn.nodename.clone(), to: myname.clone(), prio: weight }
+                            };
+                            ctrltx.send(Control::Relay(conn.nodename.clone(), link)).await.unwrap();
                             ctrltx.send(Control::NewPeer(conn.nodename.clone(), tx.clone())).await.unwrap();
                         }
                     }
