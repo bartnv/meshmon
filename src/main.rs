@@ -549,6 +549,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         }
         let scc = petgraph::algo::kosaraju_scc(&runtime.graph);
         for group in scc {
+            if group.contains(&mynode) { continue; }
             if group.contains(&nodeidx) {
                 if group.len() > 1 { println!("Lost {} nodes behind {}", group.len()-1, conn.nodename); }
                 runtime.graph.retain_edges(|g, edgeidx| !group.contains(&g.edge_endpoints(edgeidx).unwrap().0));
