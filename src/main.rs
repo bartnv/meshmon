@@ -495,7 +495,12 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 eprintln!("Protocol desync: received Link before Crypt from {}; dropping", conn.nodename);
                                 return;
                             }
-                            links.push((from, to, prio));
+                            if conn.state == ConnState::Encrypted { // Buffer links received before Sync
+                                links.push((from, to, prio));
+                            }
+                            else {
+                                control.push(Control::NewLink(conn.nodename.clone(), from, to, prio));
+                            }
                         },
                         Protocol::Sync { weight } => {
                             if conn.state < ConnState::Encrypted {
