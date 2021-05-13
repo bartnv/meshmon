@@ -356,7 +356,8 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         let config = config.read().unwrap();
         config.name.clone()
     };
-    let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10);
+    let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10); // Collects frames to send to our peer
+    let mut control: Vec<Control> = Vec::with_capacity(10); // Collects Control msgs to send to the control task
     'select: loop {
         tokio::select!{
             res = ctrlrx.recv() => {
@@ -413,7 +414,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         break 'select;
                     }
                     let proto = result.unwrap();
-                    println!("Received {:?}", proto);
+                    println!("Received {:?} from {}", proto, conn.nodename);
                     match proto {
                         Protocol::Intro { version, name, pubkey } => {
                             conn.nodename = name;
@@ -478,7 +479,6 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                         },
                         Protocol::Link { from, to, prio } => {
-                            let relay;
                             if conn.state < ConnState::Encrypted {
                                 eprintln!("Protocol desync: received Link before Crypt from {}; dropping", conn.nodename);
                                 return;
@@ -486,9 +486,10 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             {
                                 let config = config.read().unwrap();
                                 let mut runtime = config.runtime.write().unwrap();
-                                relay = runtime.graph.add_edge_from_names(&from, &to, prio); // True if a change was made
+                                if runtime.graph.add_edge_from_names(&from, &to, prio) { // True if a change was made
+                                    control.push(Control::Relay(conn.nodename.clone(), Protocol::Link { from, to, prio }));
+                                }
                             }
-                            if relay { ctrltx.send(Control::Relay(conn.nodename.clone(), Protocol::Link { from, to, prio })).await.unwrap(); }
                         },
                         Protocol::Sync { weight } => {
                             if conn.state < ConnState::Encrypted {
@@ -521,10 +522,10 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 true => Protocol::Link { from: myname.clone(), to: conn.nodename.clone(), prio: weight },
                                 false => Protocol::Link { from: conn.nodename.clone(), to: myname.clone(), prio: weight }
                             };
-                            ctrltx.send(Control::Relay(conn.nodename.clone(), link)).await.unwrap();
-                            ctrltx.send(Control::NewPeer(conn.nodename.clone(), tx.clone())).await.unwrap();
+                            control.push(Control::Relay(conn.nodename.clone(), link));
+                            control.push(Control::NewPeer(conn.nodename.clone(), tx.clone()));
                         }
-                    }
+                    } // End of match proto
                 } // End of loop over protocol messages
             } // End of socket.read() block
         } // End of select! macro
@@ -537,7 +538,12 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
             }
             frames.clear();
         }
-    } // End of select loop
+        if !control.is_empty() {
+            for msg in control.drain(..) {
+                ctrltx.send(msg).await.unwrap();
+            }
+        }
+    } // End of select! loop
 
     let mut config = config.write().unwrap();
     let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
