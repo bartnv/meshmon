@@ -110,7 +110,8 @@ enum ConnState {
 enum Control {
     Tick,
     NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for reverse control messages back to the connection task)
-    Relay(String, Protocol), // Sender node, protocol message to relay
+    NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
+    // Relay(String, Protocol), // Sender name, protocol message to relay
     Send(Protocol), // Protocol message to send
 }
 
@@ -120,6 +121,7 @@ enum Protocol {
     Crypt { boottime: u64, osversion: String },
     Link { from: String, to: String, prio: u8 },
     Sync { weight: u8 },
+    // Drop { from: String, to: String },
 }
 impl Protocol {
     fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
@@ -235,6 +237,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let mut peers = HashMap::new();
         let mut nodeidx = usize::MAX-1;
         let mut msp = graph::Graph::new_undirected();
+        let mut relays: Vec<(String, Protocol)> = vec![];
         loop {
             match rx.recv().await.unwrap() {
                 Control::Tick => {
@@ -272,39 +275,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 },
+                Control::NewLink(sender, from, to, prio) => {
+                    let config = aconfig.read().unwrap();
+                    let mut runtime = config.runtime.write().unwrap();
+                    if runtime.graph.add_edge_from_names(&from, &to, prio) { // True if a change was made
+                        relays.push((sender, Protocol::Link { from: from, to: to, prio: prio }));
+                    }
+                },
                 Control::NewPeer(name, tx) => {
                     println!("Received NewPeer Control message for {}", name);
                     let config = aconfig.read().unwrap();
                     let runtime = config.runtime.read().unwrap();
                     msp = calculate_msp(&runtime.graph);
+                    runtime.graph.print();
                     peers.insert(name, tx);
-                }
-                Control::Relay(from, protocol) => {
-                    let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
-                    for peer in msp.neighbors(graph::NodeIndex::new(0)) {
-                        if msp[peer] == from { continue; }
-                        match peers.get(&msp[peer]) {
-                            Some(tx) => {
-                                println!("Relaying {:?} to {}", protocol, msp[peer]);
-                                targets.push(tx.clone());
-                            },
-                            None => {
-                                println!("Peer {} not found", msp[peer]);
-                            }
-                        }
-
-                    }
-                    if !targets.is_empty() {
-                        tokio::spawn(async move {
-                            for tx in targets {
-                                let proto = protocol.clone();
-                                tx.send(Control::Send(proto)).await.unwrap();
-                            }
-                        });
-                    }
                 },
                 _ => {
                     panic!("Received unexpected Control message on control task");
+                }
+            }
+            for (from, proto) in relays.drain(..) {
+                let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
+                for peer in msp.neighbors(graph::NodeIndex::new(0)) {
+                    if msp[peer] == from { continue; }
+                    match peers.get(&msp[peer]) {
+                        Some(tx) => {
+                            println!("Relaying {:?} to {}", proto, msp[peer]);
+                            targets.push(tx.clone());
+                        },
+                        None => {
+                            println!("Peer {} not found", msp[peer]);
+                        }
+                    }
+
+                }
+                if !targets.is_empty() {
+                    tokio::spawn(async move {
+                        for tx in targets {
+                            let proto = proto.clone();
+                            tx.send(Control::Send(proto)).await.unwrap();
+                        }
+                    });
                 }
             }
         }
@@ -358,6 +369,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     };
     let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10); // Collects frames to send to our peer
     let mut control: Vec<Control> = Vec::with_capacity(10); // Collects Control msgs to send to the control task
+    let mut links: Vec<(String, String, u8)> = Vec::with_capacity(10);
     'select: loop {
         tokio::select!{
             res = ctrlrx.recv() => {
@@ -483,47 +495,32 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 eprintln!("Protocol desync: received Link before Crypt from {}; dropping", conn.nodename);
                                 return;
                             }
-                            {
-                                let config = config.read().unwrap();
-                                let mut runtime = config.runtime.write().unwrap();
-                                if runtime.graph.add_edge_from_names(&from, &to, prio) { // True if a change was made
-                                    control.push(Control::Relay(conn.nodename.clone(), Protocol::Link { from, to, prio }));
-                                }
-                            }
+                            links.push((from, to, prio));
                         },
                         Protocol::Sync { weight } => {
                             if conn.state < ConnState::Encrypted {
                                 eprintln!("Protocol desync: received Sync before Crypt from {}; dropping", conn.nodename);
                                 return;
                             }
-                            {
+                            if !active {
                                 let config = config.read().unwrap();
-                                let mut runtime = config.runtime.write().unwrap();
-                                if !active {
-                                    if !runtime.graph.has_path(mynode, &conn.nodename) {
-                                        for edge in runtime.graph.raw_edges() {
-                                            frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
-                                        }
+                                let mut runtime = config.runtime.read().unwrap();
+                                if !runtime.graph.has_path(mynode, &conn.nodename) {
+                                    for edge in runtime.graph.raw_edges() {
+                                        frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
                                     }
-                                    else { println!("Not sending links to already-connected node {}", conn.nodename); }
-                                    frames.push(build_frame(&sbox, Protocol::Sync { weight }));
                                 }
-                                let node = match runtime.graph.find_node(&conn.nodename) {
-                                    Some(idx) => idx,
-                                    None => runtime.graph.add_node(conn.nodename.clone())
-                                };
-                                if active { runtime.graph.update_edge(mynode, node, weight); }
-                                else { runtime.graph.update_edge(node, mynode, weight); }
-                                runtime.graph.print();
+                                else { println!("Not sending links to already-connected node {}", conn.nodename); }
+                                frames.push(build_frame(&sbox, Protocol::Sync { weight }));
                             }
-                            println!("Synchronized with {}", conn.nodename);
-                            conn.state = ConnState::Synchronized;
-                            let link = match active {
-                                true => Protocol::Link { from: myname.clone(), to: conn.nodename.clone(), prio: weight },
-                                false => Protocol::Link { from: conn.nodename.clone(), to: myname.clone(), prio: weight }
-                            };
-                            control.push(Control::Relay(conn.nodename.clone(), link));
+                            if active { control.push(Control::NewLink(conn.nodename.clone(), myname.clone(), conn.nodename.clone(), weight)); }
+                            else { control.push(Control::NewLink(conn.nodename.clone(), conn.nodename.clone(), myname.clone(), weight)); }
+                            for (from, to, prio) in links.drain(..) {
+                                control.push(Control::NewLink(conn.nodename.clone(), from, to, prio));
+                            }
                             control.push(Control::NewPeer(conn.nodename.clone(), tx.clone()));
+                            conn.state = ConnState::Synchronized;
+                            println!("Synchronized with {}", conn.nodename);
                         }
                     } // End of match proto
                 } // End of loop over protocol messages
