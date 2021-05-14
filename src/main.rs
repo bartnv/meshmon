@@ -60,7 +60,7 @@ struct Config {
     runtime: RwLock<Runtime>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct Node {
     name: String,
     listen: Vec<String>,
@@ -76,6 +76,7 @@ struct Runtime {
     pubkey: Option<PublicKey>,
     sysinfo: Option<sysinfo::System>,
     graph: UnGraph<String, u8>,
+    acceptnewnodes: bool,
 }
 
 #[derive(Debug)]
@@ -123,6 +124,7 @@ enum Protocol {
     Link { from: String, to: String, prio: u8 },
     Sync { weight: u8 },
     Drop { from: String, to: String },
+    Ping { step: u8 },
 }
 impl Protocol {
     fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
@@ -149,6 +151,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .version(VERSION)
         .author("Bart Noordervliet <bart@mmvi.nl>")
         .about("A distributed network monitor")
+        .arg(Arg::with_name("acceptnewnodes").short("a").long("accept").help("Auto-accept new nodes"))
         .subcommand(SubCommand::with_name("init")
             .about("Create a new configuration file and exit")
             .arg(Arg::with_name("name").long("name").takes_value(true).help("The name for this node"))
@@ -184,6 +187,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let mut runtime = config.runtime.write().unwrap();
         runtime.privkey = Some(rawkey.into());
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key().clone());
+        runtime.acceptnewnodes = args.is_present("acceptnewnodes");
     }
     println!("My pubkey is {}", base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.as_ref().unwrap().as_bytes()));
 
@@ -275,8 +279,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             let runtime = config.runtime.read().unwrap();
                             let file = file.clone();
                             let data = format!("{:?}", dot::Dot::with_config(&runtime.graph, &[dot::Config::EdgeNoLabel]));
+                            let msp = format!("{:?}", dot::Dot::with_config(&msp, &[dot::Config::EdgeNoLabel]));
                             tokio::spawn(async move {
+                                let mspfile = "msp.dot";
                                 fs::write(file, data).await.unwrap_or_else(|e| eprintln!("Failed to write dotfile: {}", e));
+                                fs::write(mspfile, msp).await.unwrap_or_else(|e| eprintln!("Failed to write msp dotfile: {}", e));
                             });
                         }
                     }
@@ -300,16 +307,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             runtime.graph.remove_edge(edge);
                         }
                     }
+                    msp = calculate_msp(&runtime.graph);
+                    runtime.graph.print();
                 },
                 Control::NewPeer(name, tx) => {
-                    println!("Received NewPeer Control message for {}", name);
                     peers.insert(name, tx);
                 },
                 Control::DropPeer(name) => {
+                    peers.remove(&name);
                     let config = aconfig.read().unwrap();
                     let mut runtime = config.runtime.write().unwrap();
                     if let Some(nodeidx) = runtime.graph.find_node(&name) {
                         if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
+                            println!("Removing edge {:?}", edge);
                             runtime.graph.remove_edge(edge);
                             relays.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }));
                         }
@@ -322,8 +332,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 break;
                             }
                         }
-                        runtime.graph.print();
                     }
+                    msp = calculate_msp(&runtime.graph);
+                    runtime.graph.print();
                 }
                 _ => {
                     panic!("Received unexpected Control message on control task");
@@ -405,8 +416,19 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10); // Collects frames to send to our peer
     let mut control: Vec<Control> = Vec::with_capacity(10); // Collects Control msgs to send to the control task
     let mut links: Vec<(String, String, u8)> = Vec::with_capacity(10);
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
     'select: loop {
         tokio::select!{
+            _ = interval.tick() => {
+                let idle = conn.lastdata.elapsed().as_secs();
+                if idle > 89 {
+                    eprintln!("Connection with {} lost", conn.nodename);
+                    break;
+                }
+                if active && idle > 59 {
+                    frames.push(build_frame(&sbox, Protocol::Ping { step: 1 }));
+                }
+            }
             res = ctrlrx.recv() => {
                 if conn.state < ConnState::Synchronized {
                     eprintln!("Received Control message on tcp task before synchronization; ignoring");
@@ -461,7 +483,8 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         break 'select;
                     }
                     let proto = result.unwrap();
-                    println!("Received {:?} from {}", proto, conn.nodename);
+                    if let Protocol::Ping { .. } = proto { } // Don't log Ping frames
+                    else { println!("Received {:?} from {}", proto, conn.nodename); }
                     match proto {
                         Protocol::Intro { version, name, pubkey } => {
                             conn.nodename = name;
@@ -469,13 +492,18 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 
                             {
                                 let mut config = config.write().unwrap();
-                                let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
+                                let mut res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
                                 if res.is_none() {
-                                    // let newnode = Node { name: conn.nodename.clone(), listen: vec![], pubkey };
-                                    // config.write().unwrap().nodes.push(newnode);
-                                    // node = config.read().unwrap().nodes.last()
-                                    eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
-                                    return;
+                                    {
+                                        let runtime = config.runtime.read().unwrap();
+                                        if !runtime.acceptnewnodes {
+                                            eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
+                                            return;
+                                        }
+                                    }
+                                    let newnode = Node { name: conn.nodename.clone(), pubkey: pubkey.clone(), .. Default::default() };
+                                    config.nodes.push(newnode);
+                                    res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
                                 }
                                 let node = res.unwrap();
                                 if node.pubkey != pubkey {
@@ -564,7 +592,10 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         },
                         Protocol::Drop { from, to } => {
                             control.push(Control::DropLink(from, to));
-                        }
+                        },
+                        Protocol::Ping { step }=> {
+                            if step == 1 { frames.push(build_frame(&sbox, Protocol::Ping { step: 2 })); }
+                        },
                     } // End of match proto
                 } // End of loop over protocol messages
             } // End of socket.read() block
