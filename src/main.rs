@@ -325,12 +325,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Control::DropLink(from, to) => {
                     let config = aconfig.read().unwrap();
                     let mut runtime = config.runtime.write().unwrap();
-                    let from = runtime.graph.find_node(&from);
-                    let to = runtime.graph.find_node(&to);
-                    if let (Some(from), Some(to)) = (from, to) {
-                        if let Some(edge) = runtime.graph.find_edge(from, to) {
+                    let fres = runtime.graph.find_node(&from);
+                    let tres = runtime.graph.find_node(&to);
+                    if let (Some(fnode), Some(tnode)) = (fres, tres) {
+                        if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                             runtime.graph.remove_edge(edge);
                             runtime.graph.drop_detached_edges();
+                            relays.push((myname.clone(), Protocol::Drop { from: from, to: to }));
                         }
                     }
                     msp = calculate_msp(&runtime.graph);
@@ -583,7 +584,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                             if !active {
                                 let config = config.read().unwrap();
-                                let mut runtime = config.runtime.read().unwrap();
+                                let runtime = config.runtime.read().unwrap();
                                 if !runtime.graph.has_path(mynode, &conn.nodename) {
                                     for edge in runtime.graph.raw_edges() {
                                         frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
