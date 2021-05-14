@@ -2,7 +2,7 @@
 use crypto_box::{aead::Aead, PublicKey, SalsaBox, SecretKey};
 use serde_derive::{Deserialize, Serialize};
 use rmp_serde::decode::Error as DecodeError;
-use std::{str, time, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
+use std::{str, time, env, default::Default, sync::RwLock, error::Error, sync::Arc, mem::drop, convert::TryInto, collections::HashMap };
 use tokio::{fs, net, sync, io::AsyncReadExt, io::AsyncWriteExt};
 use sysinfo::{SystemExt};
 use generic_array::GenericArray;
@@ -57,6 +57,8 @@ struct Config {
     targetpeers: u8,
     dotfile: Option<String>,
     #[serde(skip)]
+    modified: bool,
+    #[serde(skip)]
     runtime: RwLock<Runtime>,
 }
 
@@ -65,6 +67,7 @@ struct Node {
     name: String,
     listen: Vec<String>,
     pubkey: String,
+    #[serde(skip)]
     prio: u8,
     #[serde(skip)]
     connected: bool,
@@ -169,10 +172,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 nodes: Vec::new(),
                 targetpeers: 3,
                 dotfile: None,
+                modified: false,
                 runtime: RwLock::new(Default::default()),
             }
         ));
-        write_config(&*config.read().unwrap()).await?;
+        let data = toml::to_string_pretty(&*config).unwrap();
+        fs::write("config.toml", data).await.unwrap();
         return Ok(());
     }
     else { config = Arc::new(RwLock::new(toml::from_str(&fs::read_to_string("config.toml").await?)?)); }
@@ -253,39 +258,46 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Control::Tick => {
                     println!("Tick");
                     let mut ports: Vec<String> = vec![];
-                    {
-                        let config = aconfig.read().unwrap();
-                        let count = config.nodes.iter().filter(|i| i.connected).count();
-                        if count < config.targetpeers.into() {
-                            if let Some(idx) = find_next_node(&config.nodes, nodeidx) {
-                                nodeidx = idx;
-                                let node = config.nodes.get(nodeidx).unwrap();
-                                for addr in &node.listen {
-                                    ports.push(addr.clone());
-                                }
-                            }
-                            if ports.is_empty() {
-                                println!("Number of peers ({}) is below target number ({}), but I have no more available nodes", count, config.targetpeers);
-                            }
-                            else {
-                                let config = aconfig.clone();
-                                let tx = tx.clone();
-                                tokio::spawn(async move {
-                                    connect_node(config, tx, ports).await;
-                                });
+                    let config = aconfig.read().unwrap();
+                    let count = config.nodes.iter().filter(|i| i.connected).count();
+                    if count < config.targetpeers.into() {
+                        if let Some(idx) = find_next_node(&config.nodes, nodeidx) {
+                            nodeidx = idx;
+                            let node = config.nodes.get(nodeidx).unwrap();
+                            for addr in &node.listen {
+                                ports.push(addr.clone());
                             }
                         }
-                        if let Some(file) = &config.dotfile {
-                            let runtime = config.runtime.read().unwrap();
-                            let file = file.clone();
-                            let data = format!("{:?}", dot::Dot::with_config(&runtime.graph, &[dot::Config::EdgeNoLabel]));
-                            let msp = format!("{:?}", dot::Dot::with_config(&msp, &[dot::Config::EdgeNoLabel]));
+                        if ports.is_empty() {
+                            println!("Number of peers ({}) is below target number ({}), but I have no more available nodes", count, config.targetpeers);
+                        }
+                        else {
+                            let config = aconfig.clone();
+                            let tx = tx.clone();
                             tokio::spawn(async move {
-                                let mspfile = "msp.dot";
-                                fs::write(file, data).await.unwrap_or_else(|e| eprintln!("Failed to write dotfile: {}", e));
-                                fs::write(mspfile, msp).await.unwrap_or_else(|e| eprintln!("Failed to write msp dotfile: {}", e));
+                                connect_node(config, tx, ports).await;
                             });
                         }
+                    }
+                    if let Some(file) = &config.dotfile {
+                        let runtime = config.runtime.read().unwrap();
+                        let file = file.clone();
+                        let data = format!("{:?}", dot::Dot::with_config(&runtime.graph, &[dot::Config::EdgeNoLabel]));
+                        let msp = format!("{:?}", dot::Dot::with_config(&msp, &[dot::Config::EdgeNoLabel]));
+                        tokio::spawn(async move {
+                            let mspfile = "msp.dot";
+                            fs::write(file, data).await.unwrap_or_else(|e| eprintln!("Failed to write dotfile: {}", e));
+                            fs::write(mspfile, msp).await.unwrap_or_else(|e| eprintln!("Failed to write msp dotfile: {}", e));
+                        });
+                    }
+                    if config.modified {
+                        let data = toml::to_string_pretty(&*config).unwrap();
+                        tokio::spawn(async move {
+                            fs::write("config.toml", data).await
+                        });
+                        drop(config);
+                        let mut config = aconfig.write().unwrap();
+                        config.modified = false;
                     }
                 },
                 Control::NewLink(sender, from, to, prio) => {
@@ -368,8 +380,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     });
     let (res,) = tokio::join!(control);
     res.unwrap();
-    tokio::time::sleep(time::Duration::from_secs(900)).await;
-    write_config(&(*config).read().unwrap()).await?;
     Ok(())
 }
 
@@ -392,11 +402,6 @@ fn find_next_node(nodes: &Vec<Node>, start: usize) -> Option<usize> {
 }
 fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
     graph::Graph::from_elements(petgraph::algo::min_spanning_tree(&graph))
-}
-
-async fn write_config(config: &Config) -> Result<(), Box<dyn Error>> {
-    fs::write("config.toml", toml::to_string_pretty(&config)?).await?;
-    Ok(())
 }
 
 async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool) {
@@ -492,20 +497,20 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 
                             {
                                 let mut config = config.write().unwrap();
-                                let mut res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
-                                if res.is_none() {
-                                    {
-                                        let runtime = config.runtime.read().unwrap();
-                                        if !runtime.acceptnewnodes {
-                                            eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
-                                            return;
+                                let mut node = match config.nodes.iter_mut().find(|node| node.name == conn.nodename) {
+                                    Some(node) => node,
+                                    None => {
+                                        {
+                                            if !config.runtime.read().unwrap().acceptnewnodes {
+                                                eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
+                                                return;
+                                            }
                                         }
+                                        config.nodes.push(Node { name: conn.nodename.clone(), pubkey: pubkey.clone(), .. Default::default() });
+                                        config.modified = true;
+                                        config.nodes.last_mut().unwrap()
                                     }
-                                    let newnode = Node { name: conn.nodename.clone(), pubkey: pubkey.clone(), .. Default::default() };
-                                    config.nodes.push(newnode);
-                                    res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
-                                }
-                                let node = res.unwrap();
+                                };
                                 if node.pubkey != pubkey {
                                     eprintln!("Connection received from node {} with changed pubkey ({})", conn.nodename, pubkey);
                                     return;
