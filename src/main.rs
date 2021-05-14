@@ -110,8 +110,9 @@ enum ConnState {
 enum Control {
     Tick,
     NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for reverse control messages back to the connection task)
+    DropPeer(String), // Node name
     NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
-    // Relay(String, Protocol), // Sender name, protocol message to relay
+    DropLink(String, String), // Link from, link to
     Send(Protocol), // Protocol message to send
 }
 
@@ -121,7 +122,7 @@ enum Protocol {
     Crypt { boottime: u64, osversion: String },
     Link { from: String, to: String, prio: u8 },
     Sync { weight: u8 },
-    // Drop { from: String, to: String },
+    Drop { from: String, to: String },
 }
 impl Protocol {
     fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
@@ -235,6 +236,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
         let mut peers = HashMap::new();
+        let mynode = graph::NodeIndex::new(0);
+        let myname = {
+            let config = aconfig.read().unwrap();
+            config.name.clone()
+        };
         let mut nodeidx = usize::MAX-1;
         let mut msp = graph::Graph::new_undirected();
         let mut relays: Vec<(String, Protocol)> = vec![];
@@ -281,22 +287,51 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if runtime.graph.add_edge_from_names(&from, &to, prio) { // True if a change was made
                         relays.push((sender, Protocol::Link { from: from, to: to, prio: prio }));
                     }
+                    msp = calculate_msp(&runtime.graph);
+                    runtime.graph.print();
+                },
+                Control::DropLink(from, to) => {
+                    let config = aconfig.read().unwrap();
+                    let mut runtime = config.runtime.write().unwrap();
+                    let from = runtime.graph.find_node(&from);
+                    let to = runtime.graph.find_node(&to);
+                    if let (Some(from), Some(to)) = (from, to) {
+                        if let Some(edge) = runtime.graph.find_edge(from, to) {
+                            runtime.graph.remove_edge(edge);
+                        }
+                    }
                 },
                 Control::NewPeer(name, tx) => {
                     println!("Received NewPeer Control message for {}", name);
-                    let config = aconfig.read().unwrap();
-                    let runtime = config.runtime.read().unwrap();
-                    msp = calculate_msp(&runtime.graph);
-                    runtime.graph.print();
                     peers.insert(name, tx);
                 },
+                Control::DropPeer(name) => {
+                    let config = aconfig.read().unwrap();
+                    let mut runtime = config.runtime.write().unwrap();
+                    if let Some(nodeidx) = runtime.graph.find_node(&name) {
+                        if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
+                            runtime.graph.remove_edge(edge);
+                            relays.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }));
+                        }
+                        let scc = petgraph::algo::kosaraju_scc(&runtime.graph);
+                        for group in scc {
+                            if group.contains(&mynode) { continue; }
+                            if group.contains(&nodeidx) {
+                                if group.len() > 1 { println!("Lost {} nodes behind {}", group.len()-1, name); }
+                                runtime.graph.retain_edges(|g, edgeidx| !group.contains(&g.edge_endpoints(edgeidx).unwrap().0));
+                                break;
+                            }
+                        }
+                        runtime.graph.print();
+                    }
+                }
                 _ => {
                     panic!("Received unexpected Control message on control task");
                 }
             }
             for (from, proto) in relays.drain(..) {
                 let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
-                for peer in msp.neighbors(graph::NodeIndex::new(0)) {
+                for peer in msp.neighbors(mynode) {
                     if msp[peer] == from { continue; }
                     match peers.get(&msp[peer]) {
                         Some(tx) => {
@@ -526,6 +561,9 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             control.push(Control::NewPeer(conn.nodename.clone(), tx.clone()));
                             conn.state = ConnState::Synchronized;
                             println!("Synchronized with {}", conn.nodename);
+                        },
+                        Protocol::Drop { from, to } => {
+                            control.push(Control::DropLink(from, to));
                         }
                     } // End of match proto
                 } // End of loop over protocol messages
@@ -547,25 +585,12 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         }
     } // End of select! loop
 
-    let mut config = config.write().unwrap();
-    let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
-    if let Some(node) = res { node.connected = false; }
-    let mut runtime = config.runtime.write().unwrap();
-    if let Some(nodeidx) = runtime.graph.find_node(&conn.nodename) {
-        if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
-            runtime.graph.remove_edge(edge);
-        }
-        let scc = petgraph::algo::kosaraju_scc(&runtime.graph);
-        for group in scc {
-            if group.contains(&mynode) { continue; }
-            if group.contains(&nodeidx) {
-                if group.len() > 1 { println!("Lost {} nodes behind {}", group.len()-1, conn.nodename); }
-                runtime.graph.retain_edges(|g, edgeidx| !group.contains(&g.edge_endpoints(edgeidx).unwrap().0));
-                break;
-            }
-        }
-        runtime.graph.print();
+    {
+        let mut config = config.write().unwrap();
+        let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
+        if let Some(node) = res { node.connected = false; }
     }
+    ctrltx.send(Control::DropPeer(conn.nodename)).await.unwrap();
 }
 
 async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>) {
