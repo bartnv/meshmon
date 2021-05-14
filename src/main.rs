@@ -14,6 +14,7 @@ const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
     fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> bool;
+    fn drop_detached_edges(&mut self) -> usize;
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool;
     fn print(&self);
 }
@@ -35,6 +36,18 @@ impl GraphExt for UnGraph<String, u8> {
         }
         true
     }
+    fn drop_detached_edges(&mut self) -> usize {
+        let mynode = graph::NodeIndex::new(0);
+        let start = self.edge_count();
+        let scc = petgraph::algo::kosaraju_scc(&*self);
+        for group in scc {
+            if group.contains(&mynode) {
+                self.retain_edges(|g, edgeidx| group.contains(&g.edge_endpoints(edgeidx).unwrap().0));
+                break;
+            }
+        }
+        self.edge_count()-start
+    }
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool {
         match self.find_node(to) {
             None => false,
@@ -53,9 +66,9 @@ struct Config {
     name: String,
     listen: Vec<String>,
     privkey: String,
-    nodes: Vec<Node>,
     targetpeers: u8,
     dotfile: Option<String>,
+    nodes: Vec<Node>,
     #[serde(skip)]
     modified: bool,
     #[serde(skip)]
@@ -317,6 +330,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if let (Some(from), Some(to)) = (from, to) {
                         if let Some(edge) = runtime.graph.find_edge(from, to) {
                             runtime.graph.remove_edge(edge);
+                            runtime.graph.drop_detached_edges();
                         }
                     }
                     msp = calculate_msp(&runtime.graph);
@@ -331,19 +345,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let mut runtime = config.runtime.write().unwrap();
                     if let Some(nodeidx) = runtime.graph.find_node(&name) {
                         if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
-                            println!("Removing edge {:?}", edge);
                             runtime.graph.remove_edge(edge);
                             relays.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }));
                         }
-                        let scc = petgraph::algo::kosaraju_scc(&runtime.graph);
-                        for group in scc {
-                            if group.contains(&mynode) { continue; }
-                            if group.contains(&nodeidx) {
-                                if group.len() > 1 { println!("Lost {} nodes behind {}", group.len()-1, name); }
-                                runtime.graph.retain_edges(|g, edgeidx| !group.contains(&g.edge_endpoints(edgeidx).unwrap().0));
-                                break;
-                            }
-                        }
+                        let count = runtime.graph.drop_detached_edges();
+                        println!("Removed {} links", count+1);
                     }
                     msp = calculate_msp(&runtime.graph);
                     runtime.graph.print();
@@ -430,7 +436,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     eprintln!("Connection with {} lost", conn.nodename);
                     break;
                 }
-                if active && idle > 59 {
+                if idle > 59 {
                     frames.push(build_frame(&sbox, Protocol::Ping { step: 1 }));
                 }
             }
@@ -598,7 +604,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         Protocol::Drop { from, to } => {
                             control.push(Control::DropLink(from, to));
                         },
-                        Protocol::Ping { step }=> {
+                        Protocol::Ping { step } => {
                             if step == 1 { frames.push(build_frame(&sbox, Protocol::Ping { step: 2 })); }
                         },
                     } // End of match proto
