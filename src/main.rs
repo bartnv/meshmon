@@ -46,7 +46,7 @@ impl GraphExt for UnGraph<String, u8> {
                 break;
             }
         }
-        self.edge_count()-start
+        start - self.edge_count()
     }
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool {
         match self.find_node(to) {
