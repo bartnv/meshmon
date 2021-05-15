@@ -129,7 +129,7 @@ enum Control {
     NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for reverse control messages back to the connection task)
     DropPeer(String), // Node name
     NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
-    DropLink(String, String), // Link from, link to
+    DropLink(String, String, String), // Sender name, link from, link to
     Send(Protocol), // Protocol message to send
 }
 
@@ -322,7 +322,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     msp = calculate_msp(&runtime.graph);
                     runtime.graph.print();
                 },
-                Control::DropLink(from, to) => {
+                Control::DropLink(sender, from, to) => {
                     let config = aconfig.read().unwrap();
                     let mut runtime = config.runtime.write().unwrap();
                     let fres = runtime.graph.find_node(&from);
@@ -331,7 +331,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                             runtime.graph.remove_edge(edge);
                             runtime.graph.drop_detached_edges();
-                            relays.push((myname.clone(), Protocol::Drop { from: from, to: to }));
+                            relays.push((sender, Protocol::Drop { from: from, to: to }));
                         }
                     }
                     msp = calculate_msp(&runtime.graph);
@@ -603,7 +603,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             println!("Synchronized with {}", conn.nodename);
                         },
                         Protocol::Drop { from, to } => {
-                            control.push(Control::DropLink(from, to));
+                            control.push(Control::DropLink(conn.nodename.clone(), from, to));
                         },
                         Protocol::Ping { step } => {
                             if step == 1 { frames.push(build_frame(&sbox, Protocol::Ping { step: 2 })); }
