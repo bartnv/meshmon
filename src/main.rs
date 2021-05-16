@@ -8,6 +8,7 @@ use sysinfo::{SystemExt};
 use generic_array::GenericArray;
 use petgraph::{ graph, graph::UnGraph, dot, data::FromElements };
 use clap::{ Arg, App, SubCommand };
+use pnet::datalink::interfaces;
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -88,6 +89,7 @@ struct Node {
 
 #[derive(Default)]
 struct Runtime {
+    listen: Vec<String>,
     privkey: Option<SecretKey>,
     pubkey: Option<PublicKey>,
     sysinfo: Option<sysinfo::System>,
@@ -137,6 +139,7 @@ enum Control {
 enum Protocol {
     Intro { version: u8, name: String, pubkey: String },
     Crypt { boottime: u64, osversion: String },
+    Ports { node: String, ports: Vec<String> },
     Link { from: String, to: String, prio: u8 },
     Sync { weight: u8 },
     Drop { from: String, to: String },
@@ -163,11 +166,15 @@ impl Protocol {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let args = App::new("watcher")
+    let args = App::new("meshmon")
         .version(VERSION)
         .author("Bart Noordervliet <bart@mmvi.nl>")
-        .about("A distributed network monitor")
+        .about("A distributed full-mesh network monitor")
         .arg(Arg::with_name("acceptnewnodes").short("a").long("accept").help("Auto-accept new nodes"))
+        .arg(
+            Arg::with_name("connect").short("c").long("connect").help("Connect to this <address:port>")
+                .multiple(true).takes_value(true).number_of_values(1)
+        )
         .subcommand(SubCommand::with_name("init")
             .about("Create a new configuration file and exit")
             .arg(Arg::with_name("name").long("name").takes_value(true).help("The name for this node"))
@@ -195,22 +202,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     else { config = Arc::new(RwLock::new(toml::from_str(&fs::read_to_string("config.toml").await?)?)); }
 
-    println!("Starting watcher {}", VERSION);
+    println!("Starting meshmon {}", VERSION);
     {
         let rawkey: [u8; 32] = base64::decode(&config.read().unwrap().privkey)?
         .as_slice()
         .try_into()
         .expect("Entry 'privkey' in config.toml is not a valid base64 private key");
-        let config = config.read().unwrap();
-        let mut runtime = config.runtime.write().unwrap();
-        runtime.privkey = Some(rawkey.into());
-        runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key().clone());
-        runtime.acceptnewnodes = args.is_present("acceptnewnodes");
-    }
-    println!("My pubkey is {}", base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.as_ref().unwrap().as_bytes()));
-
-    println!("Initializing runtime data structures...");
-    {
         let mut config = config.write().unwrap();
         let mut prio = 1;
         for node in config.nodes.iter_mut() {
@@ -218,13 +215,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             prio += 1;
         }
         let mut runtime = config.runtime.write().unwrap();
+        runtime.listen = get_local_interfaces(&config.listen);
+        runtime.privkey = Some(rawkey.into());
+        runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key().clone());
+        runtime.acceptnewnodes = args.is_present("acceptnewnodes");
         runtime.sysinfo = Some(sysinfo::System::new_all());
         runtime.sysinfo.as_mut().unwrap().refresh_all();
         runtime.graph.add_node(config.name.clone());
+        println!("Local listen ports: {}", runtime.listen.join(", "));
+        println!("My pubkey is {}", base64::encode(runtime.pubkey.as_ref().unwrap().as_bytes()));
     }
 
     // TCP listen ports; accepts connections and spawns a task to run the TCP protocol on them
     let (tx, mut rx) = sync::mpsc::channel(10); // Channel used to send updates to the control task
+    let learn = config.read().unwrap().runtime.read().unwrap().acceptnewnodes;
     for port in &config.read().unwrap().listen {
         let tx = tx.clone();
         let config = config.clone();
@@ -237,11 +241,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let config = config.clone();
                     println!("Incoming connection from {} to {}", socket.peer_addr().unwrap(), socket.local_addr().unwrap());
                     tokio::spawn(async move {
-                        run_tcp(config, socket, tx, false).await;
+                        run_tcp(config, socket, tx, false, learn).await;
                     });
                 }
             }
         });
+    }
+
+    // Connect to the nodes passed in --connect arguments
+    if args.is_present("connect") {
+        for port in args.values_of("connect").unwrap() {
+            let ports = vec![port.to_string()];
+            let config = config.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                connect_node(config, tx, ports, true).await;
+            });
+        }
     }
 
     // Timer loop; sends Tick messages to the control task at regular intervals
@@ -288,7 +304,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             let config = aconfig.clone();
                             let tx = tx.clone();
                             tokio::spawn(async move {
-                                connect_node(config, tx, ports).await;
+                                connect_node(config, tx, ports, false).await;
                             });
                         }
                     }
@@ -390,6 +406,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn get_local_interfaces(listen: &Vec<String>) -> Vec<String> {
+    let mut res = vec![];
+    for item in listen {
+        if item.starts_with("0.0.0.0:") ||
+           item.starts_with("[::]:") ||
+           item.starts_with("*:") {
+            if let Some((_, port)) = item.rsplit_once(':') {
+                for i in interfaces() {
+                    if i.is_up() && !i.is_loopback() {
+                        for addr in i.ips {
+                            res.push(addr.ip().to_string() + ":" + port);
+                        }
+                    }
+                }
+            }
+        }
+        else { // TODO: consider how we handle hostnames here
+            res.push(item.to_string());
+        }
+    }
+    res
+}
 fn find_next_node(nodes: &Vec<Node>, start: usize) -> Option<usize> {
     if nodes.is_empty() { return None; }
     let mut idx = start;
@@ -411,7 +449,7 @@ fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
     graph::Graph::from_elements(petgraph::algo::min_spanning_tree(&graph))
 }
 
-async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool) {
+async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool, learn: bool) {
     let (tx, mut ctrlrx) = sync::mpsc::channel(10);
     let mut conn = Connection::new(match socket.peer_addr() {
         Ok(a) => a.to_string(),
@@ -499,8 +537,12 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     else { println!("Received {:?} from {}", proto, conn.nodename); }
                     match proto {
                         Protocol::Intro { version, name, pubkey } => {
-                            conn.nodename = name;
+                            if conn.state != ConnState::New {
+                                eprintln!("Protocol desync: received Intro after Crypt from {}; dropping", conn.nodename);
+                                break 'select;
+                            }
                             conn.state = ConnState::Introduced;
+                            conn.nodename = name;
 
                             {
                                 let mut config = config.write().unwrap();
@@ -508,7 +550,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     Some(node) => node,
                                     None => {
                                         {
-                                            if !config.runtime.read().unwrap().acceptnewnodes {
+                                            if !learn {
                                                 eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
                                                 return;
                                             }
@@ -546,25 +588,47 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         Protocol::Crypt { boottime, osversion } => {
                             if conn.state != ConnState::Introduced {
                                 eprintln!("Protocol desync: received Crypt before Intro from {}; dropping", conn.nodename);
-                                return;
+                                break 'select;
                             }
                             conn.state = ConnState::Encrypted;
 
                             if active {
                                 let config = config.read().unwrap();
                                 let runtime = config.runtime.read().unwrap();
-                                if !runtime.graph.has_path(mynode, &conn.nodename) {
-                                    for edge in runtime.graph.raw_edges() { // TODO: change to a petgraph::visit function
-                                        frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
-                                    }
-                                }
-                                else { println!("Not sending links to already-connected node {}", conn.nodename); }
-                                frames.push(build_frame(&sbox, Protocol::Sync { weight: conn.prio }));
+                                frames.push(build_frame(&sbox, Protocol::Ports { node: myname.clone(), ports: runtime.listen.clone() }));
                             }
                             else {
                                 frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
                             }
                         },
+                        Protocol::Ports { node, ports } => {
+                            if conn.state < ConnState::Encrypted {
+                                eprintln!("Protocol desync: received Ports before Crypt from {}; dropping", conn.nodename);
+                                break 'select;
+                            }
+                            let mut config = config.write().unwrap();
+                            if let Some(mut node) = config.nodes.iter_mut().find(|node| node.name == conn.nodename) {
+                                if ports != node.listen {
+                                    node.listen = ports;
+                                    config.modified = true;
+                                }
+                            }
+                            if conn.state == ConnState::Encrypted {
+                                let runtime = config.runtime.read().unwrap();
+                                if active {
+                                    if !runtime.graph.has_path(mynode, &conn.nodename) {
+                                        for edge in runtime.graph.raw_edges() { // TODO: change to a petgraph::visit function
+                                            frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                        }
+                                    }
+                                    else { println!("Not sending links to already-connected node {}", conn.nodename); }
+                                    frames.push(build_frame(&sbox, Protocol::Sync { weight: conn.prio }));
+                                }
+                                else {
+                                    frames.push(build_frame(&sbox, Protocol::Ports { node: myname.clone(), ports: runtime.listen.clone() }));
+                                }
+                            }
+                        }
                         Protocol::Link { from, to, prio } => {
                             if conn.state < ConnState::Encrypted {
                                 eprintln!("Protocol desync: received Link before Crypt from {}; dropping", conn.nodename);
@@ -607,7 +671,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         },
                         Protocol::Ping { step } => {
                             if step == 1 { frames.push(build_frame(&sbox, Protocol::Ping { step: 2 })); }
-                        },
+                        }
                     } // End of match proto
                 } // End of loop over protocol messages
             } // End of socket.read() block
@@ -636,7 +700,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     ctrltx.send(Control::DropPeer(conn.nodename)).await.unwrap();
 }
 
-async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>) {
+async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>, learn: bool) {
     for addr in ports {
         println!("Connecting to {}", addr);
         match net::TcpStream::connect(&addr).await {
@@ -647,7 +711,7 @@ async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<C
                 let config = config.clone();
                 let control = control.clone();
                 tokio::spawn(async move {
-                    run_tcp(config, stream, control, true).await;
+                    run_tcp(config, stream, control, true, learn).await;
                 });
                 return;
             },

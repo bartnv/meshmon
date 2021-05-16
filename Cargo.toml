@@ -1,6 +1,6 @@
 [package]
-name = "watcher"
-version = "0.1.0"
+name = "meshmon"
+version = "0.3.0"
 authors = ["Bart Noordervliet <bart@mmvi.nl>"]
 edition = "2018"
 
@@ -18,3 +18,4 @@ sysinfo = "0.17"
 generic-array = "0.14"
 petgraph = "0.5"
 clap = "2"
+pnet = "0"
