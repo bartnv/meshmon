@@ -423,7 +423,13 @@ fn get_local_interfaces(listen: &Vec<String>) -> Vec<String> {
                 for i in interfaces() {
                     if i.is_up() && !i.is_loopback() {
                         for addr in i.ips {
-                            res.push(addr.ip().to_string() + ":" + port);
+                            let mut ip = addr.ip().to_string();
+                            if ip.starts_with("fe80:") { continue; } // IPv6 link-local addresses need a zone index which we can't relay
+                            if addr.is_ipv4() { res.push(ip + ":" + port); }
+                            else {
+                                ip.insert(0, '[');
+                                res.push(ip + "]:" + port);
+                            }
                         }
                     }
                 }
