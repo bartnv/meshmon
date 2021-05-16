@@ -1,9 +1,9 @@
-#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
+// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{aead::Aead, PublicKey, SalsaBox, SecretKey};
 use serde_derive::{Deserialize, Serialize};
 use rmp_serde::decode::Error as DecodeError;
-use std::{str, time, env, default::Default, sync::RwLock, error::Error, sync::Arc, mem::drop, convert::TryInto, collections::HashMap };
-use tokio::{fs, net, sync, io::AsyncReadExt, io::AsyncWriteExt};
+use std::{str, time, time::{ Duration, Instant }, env, default::Default, sync::RwLock, error::Error, sync::Arc, mem::drop, convert::TryInto, collections::HashMap };
+use tokio::{fs, net, sync, time::timeout, io::AsyncReadExt, io::AsyncWriteExt};
 use sysinfo::{SystemExt};
 use generic_array::GenericArray;
 use petgraph::{ graph, graph::UnGraph, dot, data::FromElements };
@@ -100,7 +100,7 @@ struct Runtime {
 #[derive(Debug)]
 struct Connection {
     nodename: String,
-    lastdata: time::Instant,
+    lastdata: Instant,
     state: ConnState,
     pubkey: Option<PublicKey>,
     prio: u8,
@@ -110,7 +110,7 @@ impl Connection {
     fn new(nodename: String) -> Connection {
         Connection {
             nodename,
-            lastdata: time::Instant::now(),
+            lastdata: Instant::now(),
             state: ConnState::New,
             pubkey: None,
             prio: 0,
@@ -132,6 +132,7 @@ enum Control {
     DropPeer(String), // Node name
     NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
     DropLink(String, String, String), // Sender name, link from, link to
+    Relay(String, Protocol), // Sender name, protocol message
     Send(Protocol), // Protocol message to send
 }
 
@@ -249,8 +250,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Connect to the nodes passed in --connect arguments
-    if args.is_present("connect") {
-        for port in args.values_of("connect").unwrap() {
+    if let Some(params) = args.values_of("connect") {
+        for port in params {
             let ports = vec![port.to_string()];
             let config = config.clone();
             let tx = tx.clone();
@@ -263,7 +264,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Timer loop; sends Tick messages to the control task at regular intervals
     let timertx = tx.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
             timertx.send(Control::Tick).await.unwrap();
@@ -308,6 +309,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             });
                         }
                     }
+                    else { nodeidx = usize::MAX-1; }
+
                     if let Some(file) = &config.dotfile {
                         let runtime = config.runtime.read().unwrap();
                         let file = file.clone();
@@ -319,6 +322,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             fs::write(mspfile, msp).await.unwrap_or_else(|e| eprintln!("Failed to write msp dotfile: {}", e));
                         });
                     }
+
                     if config.modified {
                         let data = toml::to_string_pretty(&*config).unwrap();
                         tokio::spawn(async move {
@@ -333,7 +337,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let config = aconfig.read().unwrap();
                     let mut runtime = config.runtime.write().unwrap();
                     if runtime.graph.add_edge_from_names(&from, &to, prio) { // True if a change was made
-                        relays.push((sender, Protocol::Link { from: from, to: to, prio: prio }));
+                        relays.push((sender, Protocol::Link { from, to, prio }));
                     }
                     msp = calculate_msp(&runtime.graph);
                     runtime.graph.print();
@@ -347,7 +351,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                             runtime.graph.remove_edge(edge);
                             runtime.graph.drop_detached_edges();
-                            relays.push((sender, Protocol::Drop { from: from, to: to }));
+                            relays.push((sender, Protocol::Drop { from, to }));
                         }
                     }
                     msp = calculate_msp(&runtime.graph);
@@ -370,7 +374,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     msp = calculate_msp(&runtime.graph);
                     runtime.graph.print();
-                }
+                },
+                Control::Relay(from, proto) => {
+                    relays.push((from, proto));
+                },
                 _ => {
                     panic!("Received unexpected Control message on control task");
                 }
@@ -466,7 +473,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10); // Collects frames to send to our peer
     let mut control: Vec<Control> = Vec::with_capacity(10); // Collects Control msgs to send to the control task
     let mut links: Vec<(String, String, u8)> = Vec::with_capacity(10);
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+    let mut interval = tokio::time::interval(Duration::from_secs(10));
     'select: loop {
         tokio::select!{
             _ = interval.tick() => {
@@ -509,7 +516,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                 // for byte in &buf[0..n] { hex.push_str(&format!("{:02X} ", byte)); };
                 // println!("Received data: {}", hex);
                 collector.extend_from_slice(&buf[0..n]);
-                conn.lastdata = time::Instant::now();
+                conn.lastdata = Instant::now();
                 loop {
                     // In this loop, a regular break will restart the select!{} macro, a "break 'select" will
                     // exit the function *with* cleanup and a return will exit the function without cleanup
@@ -537,6 +544,10 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     else { println!("Received {:?} from {}", proto, conn.nodename); }
                     match proto {
                         Protocol::Intro { version, name, pubkey } => {
+                            if version != 1 {
+                                eprintln!("Protocol mismatch: received unknown protocol version {} from {}; dropping", version, conn.nodename);
+                                break 'select;
+                            }
                             if conn.state != ConnState::New {
                                 eprintln!("Protocol desync: received Intro after Crypt from {}; dropping", conn.nodename);
                                 break 'select;
@@ -600,6 +611,10 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             else {
                                 frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
                             }
+
+                            let dur = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
+                            let days = (dur.as_secs() - boottime)/86400;
+                            println!("Connection with {} authenticated; node up for {} days running {}", conn.nodename, days, osversion);
                         },
                         Protocol::Ports { node, ports } => {
                             if conn.state < ConnState::Encrypted {
@@ -607,10 +622,11 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 break 'select;
                             }
                             let mut config = config.write().unwrap();
-                            if let Some(mut node) = config.nodes.iter_mut().find(|node| node.name == conn.nodename) {
-                                if ports != node.listen {
-                                    node.listen = ports;
+                            if let Some(mut entry) = config.nodes.iter_mut().find(|i| i.name == node) {
+                                if ports != entry.listen {
+                                    entry.listen = ports.clone();
                                     config.modified = true;
+                                    control.push(Control::Relay(conn.nodename.clone(), Protocol::Ports { node, ports }));
                                 }
                             }
                             if conn.state == ConnState::Encrypted {
@@ -678,9 +694,17 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         } // End of select! macro
         if !frames.is_empty() {
             for frame in &frames {
-                if socket.write_all(&frame).await.is_err() {
-                    eprintln!("Write error to {}", conn.nodename);
-                    break;
+                match timeout(Duration::from_secs(10), socket.write_all(&frame)).await {
+                    Ok(res) => {
+                        if res.is_err() {
+                            eprintln!("Write error to {}", conn.nodename);
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        println!("Write timeout to {}", conn.nodename);
+                        break;
+                    }
                 }
             }
             frames.clear();
@@ -703,19 +727,24 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>, learn: bool) {
     for addr in ports {
         println!("Connecting to {}", addr);
-        match net::TcpStream::connect(&addr).await {
-            Ok(mut stream) => {
-                println!("Connected to {}", addr);
-                let frame = build_frame(&None, Protocol::new_intro(&config));
-                if stream.write_all(&frame).await.is_err() { continue; }
-                let config = config.clone();
-                let control = control.clone();
-                tokio::spawn(async move {
-                    run_tcp(config, stream, control, true, learn).await;
-                });
-                return;
+        match timeout(Duration::from_secs(5), net::TcpStream::connect(&addr)).await {
+            Ok(res) => {
+                match res {
+                    Ok(mut stream) => {
+                        println!("Connected to {}", addr);
+                        let frame = build_frame(&None, Protocol::new_intro(&config));
+                        if timeout(Duration::from_secs(10), stream.write_all(&frame)).await.is_err() { continue; }
+                        let config = config.clone();
+                        let control = control.clone();
+                        tokio::spawn(async move {
+                            run_tcp(config, stream, control, true, learn).await;
+                        });
+                        return;
+                    },
+                    Err(e) => println!("Error connecting to {}: {}", addr, e)
+                }
             },
-            Err(e) => println!("Error connecting to {}: {}", addr, e)
+            Err(_) => println!("Timeout connecting to {}", addr)
         }
     }
 }
