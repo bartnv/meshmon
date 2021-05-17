@@ -1,4 +1,4 @@
-// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{aead::Aead, PublicKey, SalsaBox, SecretKey};
 use serde_derive::{Deserialize, Serialize};
 use rmp_serde::decode::Error as DecodeError;
@@ -9,8 +9,10 @@ use generic_array::GenericArray;
 use petgraph::{ graph, graph::UnGraph, dot, data::FromElements };
 use clap::{ Arg, App, SubCommand };
 use pnet::datalink::interfaces;
+use warp::Filter;
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+static INDEX_FILE: &'static str = include_str!("index.html");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
@@ -97,6 +99,13 @@ struct Runtime {
     acceptnewnodes: bool,
 }
 
+#[derive(Default, Serialize)]
+struct JsonGraph {
+    error: Option<String>,
+    nodes: Vec<HashMap<&'static str, String>>,
+    edges: Vec<HashMap<&'static str, String>>,
+}
+
 #[derive(Debug)]
 struct Connection {
     nodename: String,
@@ -155,10 +164,9 @@ impl Protocol {
         let config = config.read().unwrap();
         let runtime = config.runtime.read().unwrap();
         let sysinfo = runtime.sysinfo.as_ref().unwrap();
-        let osversion = format!("{} {} ({} / {})",
+        let osversion = format!("{} {} ({})",
             sysinfo.get_name().unwrap_or_else(|| "<unknown>".to_owned()),
             sysinfo.get_os_version().unwrap_or_else(|| "<unknown>".to_owned()),
-            sysinfo.get_host_name().unwrap_or_else(|| "<unknown>".to_owned()),
             sysinfo.get_kernel_version().unwrap_or_else(|| "<unknown>".to_owned())
         );
         Protocol::Crypt { boottime: sysinfo.get_boot_time(), osversion }
@@ -176,9 +184,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Arg::with_name("connect").short("c").long("connect").help("Connect to this <address:port>")
                 .multiple(true).takes_value(true).number_of_values(1)
         )
+        .arg(Arg::with_name("http").short("h").long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
         .subcommand(SubCommand::with_name("init")
             .about("Create a new configuration file and exit")
-            .arg(Arg::with_name("name").long("name").takes_value(true).help("The name for this node"))
+            .arg(Arg::with_name("name").short("n").long("name").takes_value(true).help("The name for this node"))
         )
         .get_matches();
     let config: Arc<RwLock<Config>>;
@@ -246,6 +255,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     });
                 }
             }
+        });
+    }
+
+    // Start the http server if the --web argument is passed
+    if let Some(port) = args.value_of("http") {
+        println!("Starting http server on {}", port);
+        let config = config.clone();
+        let sa: std::net::SocketAddr = port.parse().expect("--http option did not contain a valid ip:port value");
+        tokio::spawn(async move {
+            let index = warp::path::end().map(|| warp::reply::html(INDEX_FILE));
+            let rpc = warp::path("rpc")
+                       .and(warp::post())
+                       .and(warp::body::form())
+                       .and(warp::any().map(move || config.clone()))
+                       .map(http_rpc);
+            warp::serve(index.or(rpc)).run(sa).await;
         });
     }
 
@@ -461,6 +486,35 @@ fn find_next_node(nodes: &Vec<Node>, start: usize) -> Option<usize> {
 fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
     graph::Graph::from_elements(petgraph::algo::min_spanning_tree(&graph))
 }
+fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp::reply::Json {
+    let mut res: JsonGraph = Default::default();
+    if let Some(req) = form.get("req") {
+        match req.as_str() {
+            "graph" => {
+                let config = config.read().unwrap();
+                let runtime = config.runtime.read().unwrap();
+                let nodes = runtime.graph.raw_nodes();
+                for i in 0..nodes.len() {
+                    let mut hm = HashMap::new();
+                    hm.insert("id", i.to_string());
+                    hm.insert("label", nodes[i].weight.clone());
+                    res.nodes.push(hm)
+                }
+                for edge in runtime.graph.raw_edges() {
+                    let mut hm = HashMap::new();
+                    hm.insert("from", edge.source().index().to_string());
+                    hm.insert("to", edge.target().index().to_string());
+                    res.edges.push(hm)
+                }
+            }
+            req => {
+                res.error = Some("Invalid request".to_string());
+            }
+        }
+    }
+    else { res.error = Some("No req parameter in POST".to_string()); }
+    warp::reply::json(&res)
+}
 
 async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool, learn: bool) {
     let (tx, mut ctrlrx) = sync::mpsc::channel(10);
@@ -620,7 +674,7 @@ async fn run_tcp(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 
                             let dur = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
                             let days = (dur.as_secs() - boottime)/86400;
-                            println!("Connection with {} authenticated; node up for {} days running {}", conn.nodename, days, osversion);
+                            println!("Connection with {} authenticated; host up for {} days running {}", conn.nodename, days, osversion);
                         },
                         Protocol::Ports { node, ports } => {
                             if conn.state < ConnState::Encrypted {

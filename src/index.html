@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+<script src="https://unpkg.com/jquery/dist/jquery.min.js"></script>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script>
+  $().ready(function() {
+    jQuery.post('/rpc', { req: 'graph' }, renderGraph, 'json');
+  });
+  function renderGraph(data) {
+    let nodes = new vis.DataSet(data.nodes);
+    let edges = new vis.DataSet(data.edges);
+    let container = document.getElementById('mynetwork');
+    let network = new vis.Network(container, { nodes: nodes, edges: edges }, {});
+  }
+</script>
+<style>
+#mynetwork {
+  width: 600px;
+  height: 400px;
+  border: 1px solid lightgray;
+}
+</style>
+</head>
+<body>
+<div id="mynetwork"></div>
+</body>
+</html>
