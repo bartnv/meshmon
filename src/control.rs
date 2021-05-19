@@ -11,7 +11,6 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         config.name.clone()
     };
     let mut nodeidx = usize::MAX-1;
-    let mut msp = graph::Graph::new_undirected();
     let mut relays: Vec<(String, Protocol)> = vec![];
     loop {
         match rx.recv().await.unwrap() {
@@ -45,7 +44,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     let runtime = config.runtime.read().unwrap();
                     let file = file.clone();
                     let data = format!("{:?}", dot::Dot::with_config(&runtime.graph, &[dot::Config::EdgeNoLabel]));
-                    let msp = format!("{:?}", dot::Dot::with_config(&msp, &[dot::Config::EdgeNoLabel]));
+                    let msp = format!("{:?}", dot::Dot::with_config(&runtime.msp, &[dot::Config::EdgeNoLabel]));
                     tokio::spawn(async move {
                         let mspfile = "msp.dot";
                         fs::write(file, data).await.unwrap_or_else(|e| eprintln!("Failed to write dotfile: {}", e));
@@ -69,8 +68,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if runtime.graph.add_edge_from_names(&from, &to, prio) { // True if a change was made
                     relays.push((sender, Protocol::Link { from, to, prio }));
                 }
-                msp = calculate_msp(&runtime.graph);
-                runtime.graph.print();
+                runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::DropLink(sender, from, to) => {
                 let config = aconfig.read().unwrap();
@@ -84,8 +82,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         relays.push((sender, Protocol::Drop { from, to }));
                     }
                 }
-                msp = calculate_msp(&runtime.graph);
-                runtime.graph.print();
+                runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::NewPeer(name, tx) => {
                 peers.insert(name, tx);
@@ -102,8 +99,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     let count = runtime.graph.drop_detached_edges();
                     println!("Removed {} links", count+1);
                 }
-                msp = calculate_msp(&runtime.graph);
-                runtime.graph.print();
+                runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::Relay(from, proto) => {
                 relays.push((from, proto));
@@ -112,28 +108,32 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 panic!("Received unexpected Control message on control task");
             }
         }
-        for (from, proto) in relays.drain(..) {
-            let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
-            for peer in msp.neighbors(mynode) {
-                if msp[peer] == from { continue; }
-                match peers.get(&msp[peer]) {
-                    Some(tx) => {
-                        println!("Relaying {:?} to {}", proto, msp[peer]);
-                        targets.push(tx.clone());
-                    },
-                    None => {
-                        println!("Peer {} not found", msp[peer]);
+        if relays.len() > 0 {
+            let config = aconfig.read().unwrap();
+            let runtime = config.runtime.read().unwrap();
+            for (from, proto) in relays.drain(..) {
+                let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
+                for peer in runtime.msp.neighbors(mynode) {
+                    if runtime.msp[peer] == from { continue; }
+                    match peers.get(&runtime.msp[peer]) {
+                        Some(tx) => {
+                            println!("Relaying {:?} to {}", proto, runtime.msp[peer]);
+                            targets.push(tx.clone());
+                        },
+                        None => {
+                            println!("Peer {} not found", runtime.msp[peer]);
+                        }
                     }
-                }
 
-            }
-            if !targets.is_empty() {
-                tokio::spawn(async move {
-                    for tx in targets {
-                        let proto = proto.clone();
-                        tx.send(Control::Send(proto)).await.unwrap();
-                    }
-                });
+                }
+                if !targets.is_empty() {
+                    tokio::spawn(async move {
+                        for tx in targets {
+                            let proto = proto.clone();
+                            tx.send(Control::Send(proto)).await.unwrap();
+                        }
+                    });
+                }
             }
         }
     }
@@ -157,5 +157,6 @@ fn find_next_node(nodes: &Vec<Node>, start: usize) -> Option<usize> {
     }
 }
 fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
+    // The resulting graph will have all nodes of the input graph with identical indices
     graph::Graph::from_elements(petgraph::algo::min_spanning_tree(&graph))
 }

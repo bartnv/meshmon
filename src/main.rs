@@ -97,6 +97,7 @@ struct Runtime {
     pubkey: Option<PublicKey>,
     sysinfo: Option<sysinfo::System>,
     graph: UnGraph<String, u8>,
+    msp: UnGraph<String, u8>,
     acceptnewnodes: bool,
 }
 
@@ -343,7 +344,8 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
     #[derive(Serialize)]
     struct JsonEdge {
         from: usize,
-        to: usize
+        to: usize,
+        color: &'static str
     }
 
     let mut res: JsonGraph = Default::default();
@@ -357,7 +359,11 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
                     res.nodes.push(JsonNode { id: i, label: nodes[i].weight.clone() });
                 }
                 for edge in runtime.graph.raw_edges() {
-                    res.edges.push(JsonEdge { from: edge.source().index(), to: edge.target().index() });
+                    let color = match runtime.msp.contains_edge(edge.source(), edge.target()) {
+                        true => "rgb(0, 255, 0)",
+                        false => "rgb(100,100,100)"
+                    };
+                    res.edges.push(JsonEdge { from: edge.source().index(), to: edge.target().index(), color });
                 }
             }
             _ => {
