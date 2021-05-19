@@ -99,13 +99,6 @@ struct Runtime {
     acceptnewnodes: bool,
 }
 
-#[derive(Default, Serialize)]
-struct JsonGraph {
-    error: Option<String>,
-    nodes: Vec<HashMap<&'static str, String>>,
-    edges: Vec<HashMap<&'static str, String>>,
-}
-
 #[derive(Debug)]
 struct Connection {
     nodename: String,
@@ -487,6 +480,23 @@ fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
     graph::Graph::from_elements(petgraph::algo::min_spanning_tree(&graph))
 }
 fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp::reply::Json {
+    #[derive(Default, Serialize)]
+    struct JsonGraph {
+        error: Option<String>,
+        nodes: Vec<JsonNode>,
+        edges: Vec<JsonEdge>
+    }
+    #[derive(Serialize)]
+    struct JsonNode {
+        id: usize,
+        label: String
+    }
+    #[derive(Serialize)]
+    struct JsonEdge {
+        from: usize,
+        to: usize
+    }
+
     let mut res: JsonGraph = Default::default();
     if let Some(req) = form.get("req") {
         match req.as_str() {
@@ -495,16 +505,10 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
                 let runtime = config.runtime.read().unwrap();
                 let nodes = runtime.graph.raw_nodes();
                 for i in 0..nodes.len() {
-                    let mut hm = HashMap::new();
-                    hm.insert("id", i.to_string());
-                    hm.insert("label", nodes[i].weight.clone());
-                    res.nodes.push(hm)
+                    res.nodes.push(JsonNode { id: i, label: nodes[i].weight.clone() });
                 }
                 for edge in runtime.graph.raw_edges() {
-                    let mut hm = HashMap::new();
-                    hm.insert("from", edge.source().index().to_string());
-                    hm.insert("to", edge.target().index().to_string());
-                    res.edges.push(hm)
+                    res.edges.push(JsonEdge { from: edge.source().index(), to: edge.target().index() });
                 }
             }
             req => {
