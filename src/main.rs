@@ -145,6 +145,7 @@ pub enum Protocol {
     Intro { version: u8, name: String, pubkey: String },
     Crypt { boottime: u64, osversion: String },
     Ports { node: String, ports: Vec<String> },
+    Node { name: String, pubkey: String },
     Link { from: String, to: String, prio: u8 },
     Sync { weight: u8 },
     Drop { from: String, to: String },
@@ -312,7 +313,7 @@ fn get_local_interfaces(listen: &Vec<String>) -> Vec<String> {
                     if i.is_up() && !i.is_loopback() {
                         for addr in i.ips {
                             let mut ip = addr.ip().to_string();
-                            if ip.starts_with("fe80:") { continue; } // IPv6 link-local addresses need a zone index which we can't relay
+                            if ip.starts_with("fe80:") { continue; } // IPv6 link-local addresses need a zone index which isn't portable between hosts
                             if addr.is_ipv4() { res.push(ip + ":" + port); }
                             else {
                                 ip.insert(0, '[');
