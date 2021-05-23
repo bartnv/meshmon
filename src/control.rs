@@ -4,6 +4,7 @@ use petgraph::{ graph, graph::UnGraph, dot, data::FromElements };
 use crate::{ Config, Node, Control, Protocol, GraphExt };
 
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, tx: sync::mpsc::Sender<Control>) {
+    let mut socks = HashMap::new();
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
     let myname = {
@@ -103,6 +104,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             },
             Control::Relay(from, proto) => {
                 relays.push((from, proto));
+            },
+            Control::UdpSock(addr, tx) => {
+                println!("Received UDP socket for {}", addr);
+                socks.insert(addr, tx);
             },
             _ => {
                 panic!("Received unexpected Control message on control task");

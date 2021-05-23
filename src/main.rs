@@ -1,4 +1,4 @@
-// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{ PublicKey, SecretKey };
 use serde_derive::{ Deserialize, Serialize };
 use std::{ str, time::{ Duration, Instant }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
@@ -11,6 +11,7 @@ use warp::Filter;
 
 mod control;
 mod tcp;
+mod udp;
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 static INDEX_FILE: &'static str = include_str!("index.html");
@@ -132,11 +133,12 @@ enum ConnState {
 #[derive(Debug)]
 pub enum Control {
     Tick,
-    NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for reverse control messages back to the connection task)
+    NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for control messages to the TCP task)
     DropPeer(String), // Node name
     NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
     DropLink(String, String, String), // Sender name, link from, link to
     Relay(String, Protocol), // Sender name, protocol message
+    UdpSock(String, sync::mpsc::Sender<Control>), // Sock address, channel (for control messages to the UDP task)
     Send(Protocol), // Protocol message to send
 }
 
@@ -232,14 +234,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("My pubkey is {}", base64::encode(runtime.pubkey.as_ref().unwrap().as_bytes()));
     }
 
-    // TCP listen ports; accepts connections and spawns a task to run the TCP protocol on them
     let (tx, rx) = sync::mpsc::channel(10); // Channel used to send updates to the control task
+
+    // TCP listen ports; accept connections and spawn tasks to run the TCP protocol on them
     let learn = config.read().unwrap().runtime.read().unwrap().acceptnewnodes;
     for port in &config.read().unwrap().listen {
         let tx = tx.clone();
         let config = config.clone();
         let listener = net::TcpListener::bind(port).await?;
-        println!("Started listening on {}", port);
+        println!("Starting TCP listener on {}", port);
         tokio::spawn(async move {
             loop {
                 if let Ok((socket, _)) = listener.accept().await {
@@ -251,6 +254,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     });
                 }
             }
+        });
+    }
+
+    // UDP listen ports
+    for port in &config.read().unwrap().listen {
+        let config = config.clone();
+        let port = port.clone();
+        let listener = net::UdpSocket::bind(&port).await?;
+        let tx = tx.clone();
+        println!("Starting UDP listener on {}", port);
+        tokio::spawn(async move {
+            udp::run(config, port, listener, tx).await;
         });
     }
 
