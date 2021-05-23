@@ -196,6 +196,10 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                         }
                         Protocol::Node { name, pubkey } => {
+                            if conn.state < ConnState::Encrypted {
+                                eprintln!("Protocol desync: received Node before Crypt from {}; dropping", conn.nodename);
+                                break 'select;
+                            }
                             if pubkey.is_empty() {
                                 let config = config.read().unwrap();
                                 match config.nodes.iter().find(|node| node.name == name) {
@@ -207,7 +211,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     }
                                 }
                             }
-                            else {
+                            else if name != myname {
                                 let mut config = config.write().unwrap();
                                 match config.nodes.iter().find(|node| node.name == name) {
                                     Some(node) => {
@@ -229,10 +233,10 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 return;
                             }
                             let config = config.read().unwrap();
-                            if config.nodes.iter().find(|node| node.name == from).is_none() {
+                            if from != myname && config.nodes.iter().find(|node| node.name == from).is_none() {
                                 frames.push(build_frame(&sbox, Protocol::Node{ name: from.clone(), pubkey: String::new() }));
                             }
-                            if config.nodes.iter().find(|node| node.name == to).is_none() {
+                            if to != myname && config.nodes.iter().find(|node| node.name == to).is_none() {
                                 frames.push(build_frame(&sbox, Protocol::Node{ name: to.clone(), pubkey: String::new() }));
                             }
                             if conn.state == ConnState::Encrypted { // Buffer links received before Sync
