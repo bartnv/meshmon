@@ -138,7 +138,6 @@ pub enum Control {
     NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
     DropLink(String, String, String), // Sender name, link from, link to
     Relay(String, Protocol), // Sender name, protocol message
-    UdpSock(String, sync::mpsc::Sender<Control>), // Sock address, channel (for control messages to the UDP task)
     Send(Protocol), // Protocol message to send
 }
 
@@ -234,42 +233,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("My pubkey is {}", base64::encode(runtime.pubkey.as_ref().unwrap().as_bytes()));
     }
 
-    let (tx, rx) = sync::mpsc::channel(10); // Channel used to send updates to the control task
-
-    // TCP listen ports; accept connections and spawn tasks to run the TCP protocol on them
-    let learn = config.read().unwrap().runtime.read().unwrap().acceptnewnodes;
-    for port in &config.read().unwrap().listen {
-        let tx = tx.clone();
-        let config = config.clone();
-        let listener = net::TcpListener::bind(port).await?;
-        println!("Starting TCP listener on {}", port);
-        tokio::spawn(async move {
-            loop {
-                if let Ok((socket, _)) = listener.accept().await {
-                    let tx = tx.clone();
-                    let config = config.clone();
-                    println!("Incoming connection from {} to {}", socket.peer_addr().unwrap(), socket.local_addr().unwrap());
-                    tokio::spawn(async move {
-                        tcp::run(config, socket, tx, false, learn).await;
-                    });
-                }
-            }
-        });
-    }
-
-    // UDP listen ports
-    for port in &config.read().unwrap().listen {
-        let config = config.clone();
-        let port = port.clone();
-        let listener = net::UdpSocket::bind(&port).await?;
-        let tx = tx.clone();
-        println!("Starting UDP listener on {}", port);
-        tokio::spawn(async move {
-            udp::run(config, port, listener, tx).await;
-        });
-    }
-
-    // Start the http server if the --web argument is passed
+    // Start the http server if the --http argument is passed
     if let Some(port) = args.value_of("http") {
         println!("Starting http server on {}", port);
         let config = config.clone();
@@ -285,20 +249,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
     }
 
+    let (ctrltx, ctrlrx) = sync::mpsc::channel(10); // Channel used to send updates to the control task
+
+    // TCP listen ports; accept connections and spawn tasks to run the TCP protocol on them
+    let learn = config.read().unwrap().runtime.read().unwrap().acceptnewnodes;
+    for port in &config.read().unwrap().listen {
+        let ctrltx = ctrltx.clone();
+        let config = config.clone();
+        let listener = net::TcpListener::bind(port).await?;
+        println!("Started TCP listener on {}", port);
+        tokio::spawn(async move {
+            loop {
+                if let Ok((socket, _)) = listener.accept().await {
+                    let ctrltx = ctrltx.clone();
+                    let config = config.clone();
+                    println!("Incoming connection from {} to {}", socket.peer_addr().unwrap(), socket.local_addr().unwrap());
+                    tokio::spawn(async move {
+                        tcp::run(config, socket, ctrltx, false, learn).await;
+                    });
+                }
+            }
+        });
+    }
+
+    // UDP listener
+    let (udptx, udprx) = sync::mpsc::channel(10); // Channel used to send messages to the UDP task
+    {
+        let config = config.clone();
+        let ctrltx = ctrltx.clone();
+        tokio::spawn(async move {
+            udp::run(config, ctrltx, udprx).await;
+        });
+    }
+
     // Connect to the nodes passed in --connect arguments
     if let Some(params) = args.values_of("connect") {
         for port in params {
             let ports = vec![port.to_string()];
             let config = config.clone();
-            let tx = tx.clone();
+            let ctrltx = ctrltx.clone();
             tokio::spawn(async move {
-                tcp::connect_node(config, tx, ports, true).await;
+                tcp::connect_node(config, ctrltx, ports, true).await;
             });
         }
     }
 
     // Timer loop; sends Tick messages to the control task at regular intervals
-    let timertx = tx.clone();
+    let timertx = ctrltx.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -310,7 +307,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Control task; handles coordinating jobs
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
-        control::run(aconfig, rx, tx).await;
+        control::run(aconfig, ctrlrx, ctrltx, udptx).await;
     });
     let (res,) = tokio::join!(control);
     res.unwrap();
