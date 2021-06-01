@@ -82,10 +82,19 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
         tokio::select!{
             _ = interval.tick() => {
                 for node in nodes.iter_mut() {
-                    if node.scanned == true {
+                    if node.scanned {
                         for target in &node.ports {
-                            if target.usable == false { continue; }
-                            println!("Would ping {} via {}", target.port, target.route);
+                            if !target.usable { continue; }
+                            let res = socks.get(&target.route);
+                            if res.is_none() {
+                                eprintln!("Failed to find local UDP socket {}", target.route);
+                                continue;
+                            }
+                            let sock = res.unwrap();
+                            let frame = build_frame(&node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
+                            if let Err(e) = sock.send_to(&frame, &target.port).await {
+                                eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
+                            }
                         }
                     }
                     else {
@@ -173,7 +182,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
                                     eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
                                 }
-                                if port.usable == false {
+                                if !port.usable {
                                     let frame = build_frame(&node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
                                     if let Err(e) = sock.send_to(&frame, &remote).await {
                                         eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
@@ -181,12 +190,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                             },
                             Protocol::Pong { value } => {
-                                if port.usable == false {
+                                if !port.usable {
                                     port.usable = true;
                                     println!("Marked {} as pingable", port.port);
                                 }
                                 println!("Node {} port {} rtt {}ms", node.name, port.port, epoch.elapsed().as_millis() as u64-value);
-                                break;
                             },
                             p => {
                                 eprintln!("Received unexpected protocol message {:?} from {}", p, remote);
@@ -211,7 +219,7 @@ async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::
     loop {
         match sock.recv_from(&mut buf).await {
             Ok((len, addr)) => {
-                println!("Received {} bytes on {} from {}", len, port, addr);
+                // println!("Received {} bytes on {} from {}", len, port, addr);
                 if len < 2 { continue; }
                 let framelen = (buf[1] as usize) << 8 | buf[0] as usize; // len is little-endian
                 if len < framelen+2 { continue; }
@@ -229,14 +237,15 @@ async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::
 }
 
 fn isprivate(ip: std::net::IpAddr) -> bool {
-    let mut ranges = vec![];
-    ranges.push(IpNetwork::new("10.0.0.0".parse().unwrap(), 8).unwrap());
-    ranges.push(IpNetwork::new("100.64.0.0".parse().unwrap(), 10).unwrap());
-    ranges.push(IpNetwork::new("169.254.0.0".parse().unwrap(), 16).unwrap());
-    ranges.push(IpNetwork::new("172.16.0.0".parse().unwrap(), 12).unwrap());
-    ranges.push(IpNetwork::new("192.168.0.0".parse().unwrap(), 16).unwrap());
-    ranges.push(IpNetwork::new("fc00::".parse().unwrap(), 7).unwrap());
-    ranges.push(IpNetwork::new("fe80::".parse().unwrap(), 10).unwrap());
+    let ranges = vec![
+        IpNetwork::new("10.0.0.0".parse().unwrap(), 8).unwrap(),
+        IpNetwork::new("100.64.0.0".parse().unwrap(), 10).unwrap(),
+        IpNetwork::new("169.254.0.0".parse().unwrap(), 16).unwrap(),
+        IpNetwork::new("172.16.0.0".parse().unwrap(), 12).unwrap(),
+        IpNetwork::new("192.168.0.0".parse().unwrap(), 16).unwrap(),
+        IpNetwork::new("fc00::".parse().unwrap(), 7).unwrap(),
+        IpNetwork::new("fe80::".parse().unwrap(), 10).unwrap()
+    ];
     for range in ranges {
         if range.contains(ip) { return true; }
     }

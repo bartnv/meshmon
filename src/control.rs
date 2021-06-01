@@ -15,7 +15,6 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     loop {
         match rx.recv().await.unwrap() {
             Control::Tick => {
-                println!("Tick");
                 let mut ports: Vec<String> = vec![];
                 let config = aconfig.read().unwrap();
                 let count = config.nodes.iter().filter(|i| i.connected).count();
@@ -108,7 +107,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 panic!("Received unexpected Control message on control task");
             }
         }
-        if relays.len() > 0 {
+        if !relays.is_empty() {
             let config = aconfig.read().unwrap();
             let runtime = config.runtime.read().unwrap();
             for (from, proto) in relays.drain(..) {
@@ -139,7 +138,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     }
 }
 
-fn find_next_node(nodes: &Vec<Node>, start: usize) -> Option<usize> {
+fn find_next_node(nodes: &[Node], start: usize) -> Option<usize> {
     if nodes.is_empty() { return None; }
     let mut idx = start;
     let mut once = false;

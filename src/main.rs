@@ -14,8 +14,8 @@ mod control;
 mod tcp;
 mod udp;
 
-const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-static INDEX_FILE: &'static str = include_str!("index.html");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+static INDEX_FILE: &str = include_str!("index.html");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
@@ -227,7 +227,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let mut runtime = config.runtime.write().unwrap();
         runtime.listen = get_local_interfaces(&config.listen);
         runtime.privkey = Some(rawkey.into());
-        runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key().clone());
+        runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key());
         runtime.acceptnewnodes = args.is_present("acceptnewnodes");
         runtime.sysinfo = Some(sysinfo::System::new_all());
         runtime.sysinfo.as_mut().unwrap().refresh_all();
@@ -317,7 +317,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn get_local_interfaces(listen: &Vec<String>) -> Vec<String> {
+fn get_local_interfaces(listen: &[String]) -> Vec<String> {
     let mut res = vec![];
     for item in listen {
         if item.starts_with("0.0.0.0:") ||
@@ -371,8 +371,8 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
                 let config = config.read().unwrap();
                 let runtime = config.runtime.read().unwrap();
                 let nodes = runtime.graph.raw_nodes();
-                for i in 0..nodes.len() {
-                    res.nodes.push(JsonNode { id: i, label: nodes[i].weight.clone() });
+                for (i, node) in nodes.iter().enumerate() {
+                    res.nodes.push(JsonNode { id: i, label: node.weight.clone() });
                 }
                 for edge in runtime.graph.raw_edges() {
                     let color = match runtime.msp.contains_edge(edge.source(), edge.target()) {

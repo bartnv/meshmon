@@ -203,7 +203,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 let config = config.read().unwrap();
                                 match config.nodes.iter().find(|node| node.name == name) {
                                     Some(node) => {
-                                        frames.push(build_frame(&sbox, Protocol::Node { name: name, pubkey: node.pubkey.clone() }));
+                                        frames.push(build_frame(&sbox, Protocol::Node { name, pubkey: node.pubkey.clone() }));
                                     },
                                     None => {
                                         println!("Received Node request for unknown node {}", name);
@@ -220,7 +220,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     },
                                     None => {
                                         println!("Learned public key for node {}", name);
-                                        config.nodes.push(Node { name: name, pubkey: pubkey, .. Default::default() });
+                                        config.nodes.push(Node { name, pubkey, .. Default::default() });
                                         config.modified = true;
                                     }
                                 }
