@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use crypto_box::{ PublicKey, SecretKey };
+use crypto_box::{ aead::Aead, PublicKey, SecretKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
 use std::{ str, time::{ Duration, Instant }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
 use tokio::{ fs, net, sync };
@@ -8,6 +8,7 @@ use petgraph::{ graph, graph::UnGraph };
 use clap::{ Arg, App, SubCommand };
 use pnet::datalink::interfaces;
 use warp::Filter;
+use generic_array::GenericArray;
 
 mod control;
 mod tcp;
@@ -150,7 +151,9 @@ pub enum Protocol {
     Link { from: String, to: String, prio: u8 },
     Sync { weight: u8 },
     Drop { from: String, to: String },
-    Ping { step: u8 },
+    Check { step: u8 },
+    Ping { value: u64 },
+    Pong { value: u64 }
 }
 impl Protocol {
     fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
@@ -386,4 +389,30 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
     }
     else { res.error = Some("No req parameter in POST".to_string()); }
     warp::reply::json(&res)
+}
+
+pub fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
+    // println!("Sending {:?}", proto);
+    let payload = match sbox {
+        Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
+        None => rmp_serde::to_vec(&proto).unwrap()
+    };
+    let mut frame: Vec<u8> = Vec::new();
+    let len: u16 = payload.len().try_into().unwrap();
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(&payload);
+    frame
+}
+
+pub fn encrypt_frame(sbox: &SalsaBox, plaintext: &[u8]) -> Vec<u8> {
+    let mut rng = rand::rngs::OsRng;
+    let nonce = crypto_box::generate_nonce(&mut rng);
+    let mut payload: Vec<u8> = vec![];
+    payload.extend_from_slice(nonce.as_slice());
+    payload.extend_from_slice(&sbox.encrypt(&nonce, plaintext).unwrap());
+    payload
+}
+pub fn decrypt_frame(sbox: &Option<SalsaBox>, payload: &[u8]) -> Result<Vec<u8>, crypto_box::aead::Error> {
+    let nonce = GenericArray::from_slice(&payload[0..24]);
+    sbox.as_ref().unwrap().decrypt(nonce, &payload[24..])
 }

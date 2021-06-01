@@ -1,10 +1,9 @@
-use crypto_box::{ aead::Aead, PublicKey, SalsaBox};
+use crypto_box::{ PublicKey, SalsaBox};
 use rmp_serde::decode::Error as DecodeError;
-use std::{ time, time::{ Duration, Instant }, default::Default, sync::RwLock, sync::Arc, convert::TryInto };
+use std::{ time, time::{ Duration, Instant }, default::Default, sync::RwLock, sync::Arc };
 use tokio::{ net, sync, time::timeout, io::AsyncReadExt, io::AsyncWriteExt};
-use generic_array::GenericArray;
 use petgraph::graph;
-use crate::{ Config, Node, Connection, ConnState, Control, Protocol, GraphExt };
+use crate::{ Config, Node, Connection, ConnState, Control, Protocol, GraphExt, build_frame, decrypt_frame };
 
 pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool, learn: bool) {
     let (tx, mut ctrlrx) = sync::mpsc::channel(10);
@@ -33,7 +32,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     break;
                 }
                 if idle > 59 {
-                    frames.push(build_frame(&sbox, Protocol::Ping { step: 1 }));
+                    frames.push(build_frame(&sbox, Protocol::Check { step: 1 }));
                 }
             }
             res = ctrlrx.recv() => {
@@ -90,7 +89,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         break 'select;
                     }
                     let proto = result.unwrap();
-                    if let Protocol::Ping { .. } = proto { } // Don't log Ping frames
+                    if let Protocol::Check { .. } = proto { } // Don't log Check frames
                     else { println!("Received {:?} from {}", proto, conn.nodename); }
                     match proto {
                         Protocol::Intro { version, name, pubkey } => {
@@ -274,8 +273,11 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         Protocol::Drop { from, to } => {
                             control.push(Control::DropLink(conn.nodename.clone(), from, to));
                         },
-                        Protocol::Ping { step } => {
-                            if step == 1 { frames.push(build_frame(&sbox, Protocol::Ping { step: 2 })); }
+                        Protocol::Check { step } => {
+                            if step == 1 { frames.push(build_frame(&sbox, Protocol::Check { step: 2 })); }
+                        },
+                        p => {
+                            eprintln!("Received unexpected protocol message {:?} on TCP task", p);
                         }
                     } // End of match proto
                 } // End of loop over protocol messages
@@ -336,30 +338,4 @@ pub async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Send
             Err(_) => println!("Timeout connecting to {}", addr)
         }
     }
-}
-
-fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
-    // println!("Sending {:?}", proto);
-    let payload = match sbox {
-        Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
-        None => rmp_serde::to_vec(&proto).unwrap()
-    };
-    let mut frame: Vec<u8> = Vec::new();
-    let len: u16 = payload.len().try_into().unwrap();
-    frame.extend_from_slice(&len.to_le_bytes());
-    frame.extend_from_slice(&payload);
-    frame
-}
-
-fn encrypt_frame(sbox: &SalsaBox, plaintext: &[u8]) -> Vec<u8> {
-    let mut rng = rand::rngs::OsRng;
-    let nonce = crypto_box::generate_nonce(&mut rng);
-    let mut payload: Vec<u8> = vec![];
-    payload.extend_from_slice(nonce.as_slice());
-    payload.extend_from_slice(&sbox.encrypt(&nonce, plaintext).unwrap());
-    payload
-}
-fn decrypt_frame(sbox: &Option<SalsaBox>, payload: &[u8]) -> Result<Vec<u8>, crypto_box::aead::Error> {
-    let nonce = GenericArray::from_slice(&payload[0..24]);
-    sbox.as_ref().unwrap().decrypt(nonce, &payload[24..])
 }
