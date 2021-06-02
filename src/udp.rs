@@ -1,14 +1,15 @@
-use std::{ str, time::{ Duration, Instant }, net::SocketAddr, default::Default, sync::RwLock, sync::Arc, collections::HashMap };
+use std::{ str, time::{ Duration, Instant }, net::{ SocketAddr, Ipv4Addr, Ipv6Addr }, default::Default, sync::RwLock, sync::Arc, collections::HashMap, convert::TryInto };
 use crypto_box::{ PublicKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
 use rmp_serde::decode::Error as DecodeError;
 use tokio::{ net, sync, time };
-use pnet::{ datalink::interfaces, ipnetwork::IpNetwork };
-use crate::{ Config, Control, Protocol, build_frame, decrypt_frame };
+use pnet::{ datalink::interfaces, ipnetwork::{ IpNetwork, Ipv4Network, Ipv6Network } };
+use lazy_static::lazy_static;
+use crate::{ Config, Control, Protocol, encrypt_frame, decrypt_frame };
 
 #[derive(Debug)]
 enum UdpControl {
-    Frame(String, SocketAddr, Vec<u8>) // Local port, remote port, encrypted frame
+    Frame(String, String, SocketAddr, Vec<u8>) // Node name, local port, remote port, encrypted frame
 }
 #[derive(Serialize, Deserialize)]
 enum UdpProto {
@@ -16,7 +17,6 @@ enum UdpProto {
 }
 
 struct PingNode {
-    name: String,
     scanned: bool,
     sbox: Option<SalsaBox>,
     ports: Vec<PingPort>
@@ -36,19 +36,21 @@ struct PingPort {
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
+    let mut namebytes;
     let epoch = Instant::now();
     let (readtx, mut readrx) = sync::mpsc::channel(10);
     let mut ports;
-    let mut nodes: Vec<PingNode> = Vec::new();
+    let mut nodes = HashMap::new();
     let mut socks = HashMap::new(); // Maps bound local IP addresses to their sockets
     {
         let config = config.read().unwrap();
+        namebytes = config.name.clone().into_bytes();
+        namebytes.push(0);
         for node in &config.nodes {
             let mut keybytes: [u8; 32] = [0; 32];
             keybytes.copy_from_slice(&base64::decode(&node.pubkey).unwrap());
-            nodes.push(
+            nodes.insert(node.name.clone(),
                 PingNode {
-                    name: node.name.clone(),
                     scanned: false,
                     sbox: Some(SalsaBox::new(&PublicKey::from(keybytes), &config.runtime.read().unwrap().privkey.as_ref().unwrap())),
                     ports: node.listen.iter().map(|port| PingPort { port: port.to_string(), route: String::new(), usable: false }).collect()
@@ -81,7 +83,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     loop {
         tokio::select!{
             _ = interval.tick() => {
-                for node in nodes.iter_mut() {
+                for (name, node) in nodes.iter_mut() {
                     if node.scanned {
                         for target in &node.ports {
                             if !target.usable { continue; }
@@ -91,7 +93,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 continue;
                             }
                             let sock = res.unwrap();
-                            let frame = build_frame(&node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
+                            let frame = build_frame(&namebytes, &node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
                             if let Err(e) = sock.send_to(&frame, &target.port).await {
                                 eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
                             }
@@ -123,7 +125,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 match socks.get(&route) {
                                     Some(sock) => {
                                         println!("Sending UDP ping to {}:{} via {}", ip, port, route);
-                                        let frame = build_frame(&node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
+                                        let frame = build_frame(&namebytes, &node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
                                         if let Err(e) = sock.send_to(&frame, (ip, port)).await {
                                             eprintln!("Failed to send UDP packet to {}:{} via {}: {}", ip, port, route, e);
                                         }
@@ -140,11 +142,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
             }
             res = readrx.recv() => { // UdpControl messages from udpreader tasks
                 match res.unwrap() {
-                    UdpControl::Frame(local, remote, frame) => {
+                    UdpControl::Frame(name, local, remote, frame) => {
                         let remote = remote.to_string();
-                        let res = nodes.iter_mut().find(|n| n.has_port(&remote));
+                        let res = nodes.get_mut(&name);
                         if res.is_none() {
-                            println!("Received UDP packet from unknown port {}", remote);
+                            println!("Received UDP packet from unknown node {} ({})", name, remote);
                             continue;
                         }
                         let node = res.unwrap();
@@ -178,12 +180,12 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
 
                         match result.unwrap() {
                             Protocol::Ping { value } => {
-                                let frame = build_frame(&node.sbox, Protocol::Pong { value });
+                                let frame = build_frame(&namebytes, &node.sbox, Protocol::Pong { value });
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
                                     eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
                                 }
                                 if !port.usable {
-                                    let frame = build_frame(&node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
+                                    let frame = build_frame(&namebytes, &node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
                                     if let Err(e) = sock.send_to(&frame, &remote).await {
                                         eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
                                     }
@@ -194,7 +196,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     port.usable = true;
                                     println!("Marked {} as pingable", port.port);
                                 }
-                                println!("Node {} port {} rtt {}ms", node.name, port.port, epoch.elapsed().as_millis() as u64-value);
+                                println!("Node {} port {} rtt {}ms", name, port.port, epoch.elapsed().as_millis() as u64-value);
                             },
                             p => {
                                 eprintln!("Received unexpected protocol message {:?} from {}", p, remote);
@@ -223,9 +225,14 @@ async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::
                 if len < 2 { continue; }
                 let framelen = (buf[1] as usize) << 8 | buf[0] as usize; // len is little-endian
                 if len < framelen+2 { continue; }
+                let res = buf.iter().skip(2).position(|x| *x == 0);
+                if res.is_none() { continue; }
+                let (namebytes, payload) = buf[2..framelen+2].split_at(res.unwrap());
+                let name = String::from_utf8(namebytes.to_vec());
+                if name.is_err() { continue; }
                 let mut frame = Vec::new();
-                frame.extend_from_slice(&buf[2..framelen+2]);
-                if let Err(e) = readtx.send(UdpControl::Frame(port.clone(), addr, frame)).await {
+                frame.extend_from_slice(&payload[1..]);
+                if let Err(e) = readtx.send(UdpControl::Frame(name.unwrap(), port.clone(), addr, frame)).await {
                     eprintln!("MPSC channel error: {}", e);
                 }
             },
@@ -237,17 +244,35 @@ async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::
 }
 
 fn isprivate(ip: std::net::IpAddr) -> bool {
-    let ranges = vec![
-        IpNetwork::new("10.0.0.0".parse().unwrap(), 8).unwrap(),
-        IpNetwork::new("100.64.0.0".parse().unwrap(), 10).unwrap(),
-        IpNetwork::new("169.254.0.0".parse().unwrap(), 16).unwrap(),
-        IpNetwork::new("172.16.0.0".parse().unwrap(), 12).unwrap(),
-        IpNetwork::new("192.168.0.0".parse().unwrap(), 16).unwrap(),
-        IpNetwork::new("fc00::".parse().unwrap(), 7).unwrap(),
-        IpNetwork::new("fe80::".parse().unwrap(), 10).unwrap()
-    ];
-    for range in ranges {
+    lazy_static!{
+        static ref RANGES: Vec<IpNetwork> = vec![
+            IpNetwork::new("10.0.0.0".parse().unwrap(), 8).unwrap(),
+            IpNetwork::new("100.64.0.0".parse().unwrap(), 10).unwrap(),
+            IpNetwork::new("169.254.0.0".parse().unwrap(), 16).unwrap(),
+            IpNetwork::new("172.16.0.0".parse().unwrap(), 12).unwrap(),
+            IpNetwork::new("192.168.0.0".parse().unwrap(), 16).unwrap(),
+            IpNetwork::new("fc00::".parse().unwrap(), 7).unwrap(),
+            IpNetwork::new("fe80::".parse().unwrap(), 10).unwrap()
+        ];
+    }
+
+    for range in &*RANGES {
         if range.contains(ip) { return true; }
     }
     false
+}
+
+fn build_frame(name: &[u8], sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
+    // println!("Sending {:?}", proto);
+    let payload = match sbox {
+        Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
+        None => rmp_serde::to_vec(&proto).unwrap()
+    };
+    let mut frame: Vec<u8> = Vec::new();
+    let len = name.len()+payload.len();
+    let len: u16 = len.try_into().unwrap();
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(name);
+    frame.extend_from_slice(&payload);
+    frame
 }

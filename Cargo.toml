@@ -20,3 +20,4 @@ petgraph = "0.5"
 clap = "2"
 pnet = "0"
 warp = { version = "0.3", features = ["default", "tls"] }
+lazy_static = "1"

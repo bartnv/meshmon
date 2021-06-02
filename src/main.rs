@@ -391,19 +391,6 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
     warp::reply::json(&res)
 }
 
-pub fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
-    // println!("Sending {:?}", proto);
-    let payload = match sbox {
-        Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
-        None => rmp_serde::to_vec(&proto).unwrap()
-    };
-    let mut frame: Vec<u8> = Vec::new();
-    let len: u16 = payload.len().try_into().unwrap();
-    frame.extend_from_slice(&len.to_le_bytes());
-    frame.extend_from_slice(&payload);
-    frame
-}
-
 pub fn encrypt_frame(sbox: &SalsaBox, plaintext: &[u8]) -> Vec<u8> {
     let mut rng = rand::rngs::OsRng;
     let nonce = crypto_box::generate_nonce(&mut rng);

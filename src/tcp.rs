@@ -1,9 +1,9 @@
 use crypto_box::{ PublicKey, SalsaBox};
 use rmp_serde::decode::Error as DecodeError;
-use std::{ time, time::{ Duration, Instant }, default::Default, sync::RwLock, sync::Arc };
+use std::{ time, time::{ Duration, Instant }, default::Default, sync::RwLock, sync::Arc, convert::TryInto };
 use tokio::{ net, sync, time::timeout, io::AsyncReadExt, io::AsyncWriteExt};
 use petgraph::graph;
-use crate::{ Config, Node, Connection, ConnState, Control, Protocol, GraphExt, build_frame, decrypt_frame };
+use crate::{ Config, Node, Connection, ConnState, Control, Protocol, GraphExt, encrypt_frame, decrypt_frame };
 
 pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool, learn: bool) {
     let (tx, mut ctrlrx) = sync::mpsc::channel(10);
@@ -338,4 +338,17 @@ pub async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Send
             Err(_) => println!("Timeout connecting to {}", addr)
         }
     }
+}
+
+fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
+    // println!("Sending {:?}", proto);
+    let payload = match sbox {
+        Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
+        None => rmp_serde::to_vec(&proto).unwrap()
+    };
+    let mut frame: Vec<u8> = Vec::new();
+    let len: u16 = payload.len().try_into().unwrap();
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(&payload);
+    frame
 }
