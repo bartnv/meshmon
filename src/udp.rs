@@ -172,11 +172,14 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let sock = res.unwrap();
 
                         let res = node.ports.iter_mut().find(|p| p.port == remote);
-                        if res.is_none() {
-                            eprintln!("Failed to find remote UDP port {}", remote);
-                            continue;
-                        }
-                        let port = res.unwrap();
+                        let port = match res {
+                            Some(port) => port,
+                            None => {
+                                eprintln!("Learned new port {} for node {}", remote, name);
+                                node.ports.push(PingPort { port: remote.clone(), route: sa.ip().to_string(), usable: true });
+                                node.ports.last_mut().unwrap()
+                            }
+                        };
 
                         match result.unwrap() {
                             Protocol::Ping { value } => {
