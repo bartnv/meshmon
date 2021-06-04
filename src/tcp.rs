@@ -199,11 +199,12 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 eprintln!("Protocol desync: received Node before Crypt from {}; dropping", conn.nodename);
                                 break 'select;
                             }
-                            if pubkey.is_empty() {
+                            if pubkey.is_empty() { // This is a Node request
                                 let config = config.read().unwrap();
                                 match config.nodes.iter().find(|node| node.name == name) {
                                     Some(node) => {
-                                        frames.push(build_frame(&sbox, Protocol::Node { name, pubkey: node.pubkey.clone() }));
+                                        frames.push(build_frame(&sbox, Protocol::Node { name: name.clone(), pubkey: node.pubkey.clone() }));
+                                        frames.push(build_frame(&sbox, Protocol::Ports { node: name, ports: node.listen.clone() }));
                                     },
                                     None => {
                                         println!("Received Node request for unknown node {}", name);
