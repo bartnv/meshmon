@@ -19,7 +19,6 @@ static INDEX_FILE: &str = include_str!("index.html");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
-    fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> bool;
     fn drop_detached_nodes(&mut self) -> usize;
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool;
     fn print(&self);
@@ -27,20 +26,6 @@ pub trait GraphExt {
 impl GraphExt for UnGraph<String, u8> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
         self.node_indices().find(|i| self[*i] == name)
-    }
-    fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> bool {
-        let from = self.find_node(from).unwrap_or_else(|| self.add_node(from.to_string()));
-        let to = self.find_node(to).unwrap_or_else(|| self.add_node(to.to_string()));
-        match self.find_edge(from, to) {
-            Some(idx) => {
-                if self[idx] == weight { return false; }
-                self[idx] = weight;
-            },
-            None => {
-                self.add_edge(from, to, weight);
-            }
-        }
-        true
     }
     fn drop_detached_nodes(&mut self) -> usize {
         let mynode = graph::NodeIndex::new(0);
