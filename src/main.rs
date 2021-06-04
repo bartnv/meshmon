@@ -20,7 +20,7 @@ static INDEX_FILE: &str = include_str!("index.html");
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
     fn add_edge_from_names(&mut self, from: &str, to: &str, weight: u8) -> bool;
-    fn drop_detached_edges(&mut self) -> usize;
+    fn drop_detached_nodes(&mut self) -> usize;
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool;
     fn print(&self);
 }
@@ -42,17 +42,17 @@ impl GraphExt for UnGraph<String, u8> {
         }
         true
     }
-    fn drop_detached_edges(&mut self) -> usize {
+    fn drop_detached_nodes(&mut self) -> usize {
         let mynode = graph::NodeIndex::new(0);
-        let start = self.edge_count();
+        let start = self.node_count();
         let scc = petgraph::algo::kosaraju_scc(&*self);
         for group in scc {
             if group.contains(&mynode) {
-                self.retain_edges(|g, edgeidx| group.contains(&g.edge_endpoints(edgeidx).unwrap().0));
+                self.retain_nodes(|g, nodeidx| group.contains(&nodeidx));
                 break;
             }
         }
-        start - self.edge_count()
+        start - self.node_count()
     }
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool {
         match self.find_node(to) {
