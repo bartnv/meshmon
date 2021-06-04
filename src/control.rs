@@ -11,7 +11,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         config.name.clone()
     };
     let mut nodeidx = usize::MAX-1;
-    let mut relays: Vec<(String, Protocol)> = vec![];
+    let mut relays: Vec<(String, Protocol, bool)> = vec![];
     loop {
         match rx.recv().await.unwrap() {
             Control::Tick => {
@@ -65,7 +65,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let config = aconfig.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
                 if runtime.graph.add_edge_from_names(&from, &to, prio) { // True if a change was made
-                    relays.push((sender, Protocol::Link { from, to, prio }));
+                    relays.push((sender, Protocol::Link { from, to, prio }, true));
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
             },
@@ -78,7 +78,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                         runtime.graph.remove_edge(edge);
                         runtime.graph.drop_detached_edges();
-                        relays.push((sender, Protocol::Drop { from, to }));
+                        relays.push((sender, Protocol::Drop { from, to }, true));
                     }
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
@@ -93,7 +93,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if let Some(nodeidx) = runtime.graph.find_node(&name) {
                     if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
                         runtime.graph.remove_edge(edge);
-                        relays.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }));
+                        relays.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
                     }
                     let count = runtime.graph.drop_detached_edges();
                     println!("Removed {} links", count+1);
@@ -101,7 +101,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::Relay(from, proto) => {
-                relays.push((from, proto));
+                relays.push((from, proto, false));
             },
             _ => {
                 panic!("Received unexpected Control message on control task");
@@ -110,20 +110,27 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         if !relays.is_empty() {
             let config = aconfig.read().unwrap();
             let runtime = config.runtime.read().unwrap();
-            for (from, proto) in relays.drain(..) {
+            for (from, proto, broadcast) in relays.drain(..) {
                 let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
-                for peer in runtime.msp.neighbors(mynode) {
-                    if runtime.msp[peer] == from { continue; }
-                    match peers.get(&runtime.msp[peer]) {
-                        Some(tx) => {
-                            println!("Relaying {:?} to {}", proto, runtime.msp[peer]);
-                            targets.push(tx.clone());
-                        },
-                        None => {
-                            println!("Peer {} not found", runtime.msp[peer]);
+                if broadcast {
+                    for (name, tx) in &peers {
+                        if *name == from { continue; }
+                        targets.push(tx.clone());
+                    }
+                }
+                else {
+                    for peer in runtime.msp.neighbors(mynode) {
+                        if runtime.msp[peer] == from { continue; }
+                        match peers.get(&runtime.msp[peer]) {
+                            Some(tx) => {
+                                println!("Relaying {:?} to {}", proto, runtime.msp[peer]);
+                                targets.push(tx.clone());
+                            },
+                            None => {
+                                println!("Peer {} not found", runtime.msp[peer]);
+                            }
                         }
                     }
-
                 }
                 if !targets.is_empty() {
                     tokio::spawn(async move {
