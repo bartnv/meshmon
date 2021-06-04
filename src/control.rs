@@ -106,7 +106,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                         runtime.graph.remove_edge(edge);
                         let count = runtime.graph.drop_detached_nodes();
-                        if count > 0 { println!("Lost {} nodes", count); }
+                        if count > 0 { println!("Lost {} node{}", count, match count { 1 => "", _ => "s" }); }
                         relaymsgs.push((sender, Protocol::Drop { from, to }, true));
                     }
                 }
@@ -125,7 +125,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         relaymsgs.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
                     }
                     let count = runtime.graph.drop_detached_nodes();
-                    if count > 0 { println!("Lost {} nodes", count); }
+                    if count > 0 { println!("Lost {} node{}", count, match count { 1 => "", _ => "s" }); }
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
             },

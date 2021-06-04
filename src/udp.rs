@@ -5,7 +5,7 @@ use rmp_serde::decode::Error as DecodeError;
 use tokio::{ net, sync, time };
 use pnet::{ datalink::interfaces, ipnetwork::{ IpNetwork, Ipv4Network, Ipv6Network } };
 use lazy_static::lazy_static;
-use crate::{ Config, Control, Protocol, encrypt_frame, decrypt_frame };
+use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame };
 
 #[derive(Debug)]
 enum UdpControl {
@@ -17,11 +17,20 @@ enum UdpProto {
 }
 
 struct PingNode {
-    scanned: bool,
+    rescan: bool,
     sbox: Option<SalsaBox>,
     ports: Vec<PingPort>
 }
 impl PingNode {
+    fn from(runtime: &RwLock<Runtime>, node: &Node) -> PingNode {
+        let mut keybytes: [u8; 32] = [0; 32];
+        keybytes.copy_from_slice(&base64::decode(&node.pubkey).unwrap());
+        PingNode {
+            rescan: true,
+            sbox: Some(SalsaBox::new(&PublicKey::from(keybytes), runtime.read().unwrap().privkey.as_ref().unwrap())),
+            ports: node.listen.iter().map(|port| PingPort { port: port.to_string(), route: String::new(), usable: false }).collect()
+        }
+    }
     fn has_port(&self, port: &str) -> bool {
         for item in &self.ports {
             if item.port == port { return true; }
@@ -40,23 +49,12 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     let epoch = Instant::now();
     let (readtx, mut readrx) = sync::mpsc::channel(10);
     let mut ports;
-    let mut nodes = HashMap::new();
+    let mut nodes: HashMap<String, PingNode> = HashMap::new();
     let mut socks = HashMap::new(); // Maps bound local IP addresses to their sockets
     {
         let config = config.read().unwrap();
         namebytes = config.name.clone().into_bytes();
         namebytes.push(0);
-        for node in &config.nodes {
-            let mut keybytes: [u8; 32] = [0; 32];
-            keybytes.copy_from_slice(&base64::decode(&node.pubkey).unwrap());
-            nodes.insert(node.name.clone(),
-                PingNode {
-                    scanned: false,
-                    sbox: Some(SalsaBox::new(&PublicKey::from(keybytes), &config.runtime.read().unwrap().privkey.as_ref().unwrap())),
-                    ports: node.listen.iter().map(|port| PingPort { port: port.to_string(), route: String::new(), usable: false }).collect()
-                }
-            );
-        }
         let runtime = config.runtime.read().unwrap();
         ports = runtime.listen.clone();
     }
@@ -80,27 +78,17 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     }
 
     let mut interval = tokio::time::interval_at(time::Instant::now() + Duration::from_secs(10), Duration::from_secs(60));
+    let mut scanned;
     loop {
+        scanned = false;
         tokio::select!{
             _ = interval.tick() => {
                 for (name, node) in nodes.iter_mut() {
-                    if node.scanned {
-                        for target in &node.ports {
-                            if !target.usable { continue; }
-                            let res = socks.get(&target.route);
-                            if res.is_none() {
-                                eprintln!("Failed to find local UDP socket {}", target.route);
-                                continue;
-                            }
-                            let sock = res.unwrap();
-                            let frame = build_frame(&namebytes, &node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
-                            if let Err(e) = sock.send_to(&frame, &target.port).await {
-                                eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
-                            }
-                        }
-                    }
-                    else {
-                        node.scanned = true;
+                    if node.rescan {
+                        if scanned { continue; } // Only scan one node per tick
+                        scanned = true;
+                        node.rescan = false;
+                        println!("Scanning node {} UDP ports", name);
                         for target in node.ports.iter_mut() {
                             let sa: SocketAddr = target.port.parse().unwrap();
                             let ip = sa.ip();
@@ -135,6 +123,21 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     }
                                 }
                                 target.route = route;
+                            }
+                        }
+                    }
+                    else {
+                        for target in &node.ports {
+                            if !target.usable { continue; }
+                            let res = socks.get(&target.route);
+                            if res.is_none() {
+                                eprintln!("Failed to find local UDP socket {}", target.route);
+                                continue;
+                            }
+                            let sock = res.unwrap();
+                            let frame = build_frame(&namebytes, &node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
+                            if let Err(e) = sock.send_to(&frame, &target.port).await {
+                                eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
                             }
                         }
                     }
@@ -210,6 +213,27 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
             }
             res = udprx.recv() => { // Messages from control task
                 match res.unwrap() {
+                    Control::NewNode(name) => {
+                        let config = config.read().unwrap();
+                        let node = config.nodes.iter().find(|i| i.name == name);
+                        if node.is_none() {
+                            eprintln!("Received Control::NewNode for nonexisted node {}", name);
+                            continue;
+                        }
+                        let node = node.unwrap();
+                        if nodes.contains_key(&name) {
+                            let pingnode = nodes.get_mut(&name).unwrap();
+                            pingnode.rescan = true;
+                            for port in &node.listen {
+                                if pingnode.has_port(port) { continue; }
+                                pingnode.ports.push(PingPort { port: port.clone(), route: String::new(), usable: false });
+                            }
+                        }
+                        else {
+                            let node = PingNode::from(&config.runtime, node);
+                            nodes.insert(name, node);
+                        }
+                    },
                     c => {
                         println!("Received Control message {:?}", c);
                     }
