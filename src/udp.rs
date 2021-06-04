@@ -1,9 +1,9 @@
-use std::{ str, time::{ Duration, Instant }, net::{ SocketAddr, Ipv4Addr, Ipv6Addr }, default::Default, sync::RwLock, sync::Arc, collections::HashMap, convert::TryInto };
+use std::{ str, time::{ Duration, Instant }, net::SocketAddr, default::Default, sync::RwLock, sync::Arc, collections::HashMap, convert::TryInto };
 use crypto_box::{ PublicKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
 use rmp_serde::decode::Error as DecodeError;
 use tokio::{ net, sync, time };
-use pnet::{ datalink::interfaces, ipnetwork::{ IpNetwork, Ipv4Network, Ipv6Network } };
+use pnet::{ datalink::interfaces, ipnetwork::IpNetwork };
 use lazy_static::lazy_static;
 use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame };
 
@@ -125,6 +125,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 target.route = route;
                             }
                         }
+                        ctrltx.send(Control::Scan(name.clone())).await.unwrap();
                     }
                     else {
                         for target in &node.ports {
@@ -215,23 +216,24 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                 match res.unwrap() {
                     Control::NewNode(name) => {
                         let config = config.read().unwrap();
-                        let node = config.nodes.iter().find(|i| i.name == name);
-                        if node.is_none() {
-                            eprintln!("Received Control::NewNode for nonexisted node {}", name);
-                            continue;
-                        }
-                        let node = node.unwrap();
-                        if nodes.contains_key(&name) {
-                            let pingnode = nodes.get_mut(&name).unwrap();
-                            pingnode.rescan = true;
-                            for port in &node.listen {
-                                if pingnode.has_port(port) { continue; }
-                                pingnode.ports.push(PingPort { port: port.clone(), route: String::new(), usable: false });
+                        let node = match config.nodes.iter().find(|i| i.name == name) {
+                            Some(node) => node,
+                            None => {
+                                eprintln!("Received Control::NewNode for nonexisted node {}", name);
+                                continue;
                             }
-                        }
-                        else {
-                            let node = PingNode::from(&config.runtime, node);
-                            nodes.insert(name, node);
+                        };
+                        match nodes.get_mut(&name) {
+                            Some(pingnode) => {
+                                pingnode.rescan = true;
+                                for port in &node.listen {
+                                    if pingnode.has_port(port) { continue; }
+                                    pingnode.ports.push(PingPort { port: port.clone(), route: String::new(), usable: false });
+                                }
+                            },
+                            None => {
+                                nodes.insert(name, PingNode::from(&config.runtime, node));
+                            }
                         }
                     },
                     c => {
@@ -249,14 +251,14 @@ async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::
         match sock.recv_from(&mut buf).await {
             Ok((len, addr)) => {
                 // println!("Received {} bytes on {} from {}", len, port, addr);
-                if len < 2 { continue; }
+                if len < 2 { println!("Short UDP message from {}", addr); continue; }
                 let framelen = (buf[1] as usize) << 8 | buf[0] as usize; // len is little-endian
-                if len < framelen+2 { continue; }
+                if len < framelen+2 { println!("Short UDP message from {}", addr); continue; }
                 let res = buf.iter().skip(2).position(|x| *x == 0);
-                if res.is_none() { continue; }
+                if res.is_none() { println!("Invalid UDP message from {}", addr); continue; }
                 let (namebytes, payload) = buf[2..framelen+2].split_at(res.unwrap());
                 let name = String::from_utf8(namebytes.to_vec());
-                if name.is_err() { continue; }
+                if name.is_err() { println!("Invalid name in UDP message from {}", addr); continue; }
                 let mut frame = Vec::new();
                 frame.extend_from_slice(&payload[1..]);
                 if let Err(e) = readtx.send(UdpControl::Frame(name.unwrap(), port.clone(), addr, frame)).await {

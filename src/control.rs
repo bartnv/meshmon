@@ -82,7 +82,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let changes = match runtime.graph.find_edge(fromidx, toidx) {
                     Some(idx) => {
                         match runtime.graph[idx] {
-                            prio => false,
+                            val if val == prio => false,
                             _ => {
                                 runtime.graph[idx] = prio;
                                 true
@@ -131,6 +131,9 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             },
             Control::Relay(from, proto) => {
                 relaymsgs.push((from, proto, false));
+            },
+            Control::Scan(node) => {
+
             },
             _ => {
                 panic!("Received unexpected Control message on control task");

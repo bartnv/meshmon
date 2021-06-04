@@ -33,7 +33,7 @@ impl GraphExt for UnGraph<String, u8> {
         let scc = petgraph::algo::kosaraju_scc(&*self);
         for group in scc {
             if group.contains(&mynode) {
-                self.retain_nodes(|g, nodeidx| group.contains(&nodeidx));
+                self.retain_nodes(|_, nodeidx| group.contains(&nodeidx));
                 break;
             }
         }
@@ -126,6 +126,7 @@ pub enum Control {
     DropLink(String, String, String), // Sender name, link from, link to
     Relay(String, Protocol), // Sender name, protocol message
     Send(Protocol), // Protocol message to send
+    Scan(String), // Node name we just scanned
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
