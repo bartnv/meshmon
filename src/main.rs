@@ -136,6 +136,7 @@ pub enum Control {
     Tick,
     NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for control messages to the TCP task)
     DropPeer(String), // Node name
+    NewNode(String), // Node name
     NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
     DropLink(String, String, String), // Sender name, link from, link to
     Relay(String, Protocol), // Sender name, protocol message

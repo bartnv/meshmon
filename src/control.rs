@@ -11,7 +11,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         config.name.clone()
     };
     let mut nodeidx = usize::MAX-1;
-    let mut relays: Vec<(String, Protocol, bool)> = vec![];
+    let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
+    let mut udpmsgs: Vec<Control> = vec![];
     loop {
         match rx.recv().await.unwrap() {
             Control::Tick => {
@@ -64,9 +65,36 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             Control::NewLink(sender, from, to, prio) => {
                 let config = aconfig.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
-                if runtime.graph.add_edge_from_names(&from, &to, prio) { // True if a change was made
-                    relays.push((sender, Protocol::Link { from, to, prio }, true));
-                }
+                let fromidx = match runtime.graph.find_node(&from) {
+                    Some(idx) => idx,
+                    None => {
+                        udpmsgs.push(Control::NewNode(from.clone()));
+                        runtime.graph.add_node(from.clone())
+                    }
+                };
+                let toidx = match runtime.graph.find_node(&to) {
+                    Some(idx) => idx,
+                    None => {
+                        udpmsgs.push(Control::NewNode(to.clone()));
+                        runtime.graph.add_node(to.clone())
+                    }
+                };
+                let changes = match runtime.graph.find_edge(fromidx, toidx) {
+                    Some(idx) => {
+                        match runtime.graph[idx] {
+                            prio => false,
+                            _ => {
+                                runtime.graph[idx] = prio;
+                                true
+                            }
+                        }
+                    },
+                    None => {
+                        runtime.graph.add_edge(fromidx, toidx, prio);
+                        true
+                    }
+                };
+                if changes { relaymsgs.push((sender, Protocol::Link { from, to, prio }, true)); };
                 runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::DropLink(sender, from, to) => {
@@ -79,7 +107,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         runtime.graph.remove_edge(edge);
                         let count = runtime.graph.drop_detached_nodes();
                         if count > 0 { println!("Lost {} nodes", count); }
-                        relays.push((sender, Protocol::Drop { from, to }, true));
+                        relaymsgs.push((sender, Protocol::Drop { from, to }, true));
                     }
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
@@ -94,7 +122,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if let Some(nodeidx) = runtime.graph.find_node(&name) {
                     if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
                         runtime.graph.remove_edge(edge);
-                        relays.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
+                        relaymsgs.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
                     }
                     let count = runtime.graph.drop_detached_nodes();
                     if count > 0 { println!("Lost {} nodes", count); }
@@ -102,16 +130,16 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::Relay(from, proto) => {
-                relays.push((from, proto, false));
+                relaymsgs.push((from, proto, false));
             },
             _ => {
                 panic!("Received unexpected Control message on control task");
             }
         }
-        if !relays.is_empty() {
+        if !relaymsgs.is_empty() {
             let config = aconfig.read().unwrap();
             let runtime = config.runtime.read().unwrap();
-            for (from, proto, broadcast) in relays.drain(..) {
+            for (from, proto, broadcast) in relaymsgs.drain(..) {
                 let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
                 if broadcast {
                     for (name, tx) in &peers {
@@ -142,6 +170,15 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     });
                 }
             }
+        }
+        if !udpmsgs.is_empty() {
+            let tx = udptx.clone();
+            let msgs: Vec<Control> = udpmsgs.drain(..).collect();
+            tokio::spawn(async move {
+                for msg in msgs.into_iter() {
+                    tx.send(msg).await.unwrap();
+                }
+            });
         }
     }
 }
