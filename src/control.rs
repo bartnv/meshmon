@@ -1,6 +1,6 @@
 use std::{ sync::RwLock, sync::Arc, mem::drop, collections::HashMap };
 use tokio::{ fs, sync };
-use petgraph::{ graph, graph::UnGraph, dot, data::FromElements };
+use petgraph::{ graph, graph::UnGraph, dot, data::FromElements, algo };
 use crate::{ Config, Node, Control, Protocol, GraphExt };
 
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>) {
@@ -12,6 +12,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     };
     let mut nodeidx = usize::MAX-1;
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
+    let mut directmsgs: Vec<(String, Protocol)> = vec![];
     let mut udpmsgs: Vec<Control> = vec![];
     loop {
         match rx.recv().await.unwrap() {
@@ -133,7 +134,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 relaymsgs.push((from, proto, false));
             },
             Control::Scan(node) => {
-
+                directmsgs.push((myname.clone(), Protocol::Scan { from: myname.clone(), to: node }));
             },
             _ => {
                 panic!("Received unexpected Control message on control task");
@@ -174,6 +175,26 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
             }
         }
+        if !directmsgs.is_empty() {
+            let config = aconfig.read().unwrap();
+            let runtime = config.runtime.read().unwrap();
+            for (to, proto) in directmsgs.drain(..) {
+                let tonode = match runtime.msp.find_node(&to) {
+                    Some(idx) => idx,
+                    None => {
+                        eprintln!("Node {} not found in MSP", to);
+                        continue;
+                    }
+                };
+                let mut paths = algo::all_simple_paths(&runtime.msp, mynode, tonode, 0, None);
+                let res: Option<Vec<graph::NodeIndex>> = paths.next();
+                if let Some(path) = res {
+                    if path.len() < 2 { continue; }
+                    let name = &runtime.msp[*path.get(1).unwrap()];
+                    println!("Would send Scan to {}", name);
+                }
+            }
+        }
         if !udpmsgs.is_empty() {
             let tx = udptx.clone();
             let msgs: Vec<Control> = udpmsgs.drain(..).collect();
@@ -205,5 +226,5 @@ fn find_next_node(nodes: &[Node], start: usize) -> Option<usize> {
 }
 fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
     // The resulting graph will have all nodes of the input graph with identical indices
-    graph::Graph::from_elements(petgraph::algo::min_spanning_tree(&graph))
+    graph::Graph::from_elements(algo::min_spanning_tree(&graph))
 }

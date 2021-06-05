@@ -84,8 +84,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
         tokio::select!{
             _ = interval.tick() => {
                 for (name, node) in nodes.iter_mut() {
-                    if node.rescan {
-                        if scanned { continue; } // Only scan one node per tick
+                    if node.rescan && !scanned {
                         scanned = true;
                         node.rescan = false;
                         println!("Scanning node {} UDP ports", name);
@@ -170,7 +169,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let sa: SocketAddr = local.parse().unwrap();
                         let res = socks.get(&sa.ip().to_string());
                         if res.is_none() {
-                            eprintln!("Failed to find local UDP socket {}", sa.ip());
+                            eprintln!("Failed to find local UDP socket for port {}", local);
                             continue;
                         }
                         let sock = res.unwrap();
@@ -179,7 +178,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let port = match res {
                             Some(port) => port,
                             None => {
-                                eprintln!("Learned new port {} for node {}", remote, name);
+                                eprintln!("Learned new port {} for node {} with route {}", remote, name, sa.ip());
                                 node.ports.push(PingPort { port: remote.clone(), route: sa.ip().to_string(), usable: true });
                                 node.ports.last_mut().unwrap()
                             }
@@ -201,7 +200,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             Protocol::Pong { value } => {
                                 if !port.usable {
                                     port.usable = true;
-                                    println!("Marked {} as pingable", port.port);
+                                    port.route = sa.ip().to_string();
+                                    println!("Marked {} as pingable via {}", port.port, port.route);
                                 }
                                 println!("Node {} port {} rtt {}ms", name, port.port, epoch.elapsed().as_millis() as u64-value);
                             },

@@ -140,7 +140,8 @@ pub enum Protocol {
     Drop { from: String, to: String },
     Check { step: u8 },
     Ping { value: u64 },
-    Pong { value: u64 }
+    Pong { value: u64 },
+    Scan { from: String, to: String }
 }
 impl Protocol {
     fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
