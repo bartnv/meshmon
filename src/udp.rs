@@ -7,6 +7,9 @@ use pnet::{ datalink::interfaces, ipnetwork::IpNetwork };
 use lazy_static::lazy_static;
 use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame };
 
+static PINGFREQ: u8 = 60;
+static SPREAD: u8 = 6;
+
 #[derive(Debug)]
 enum UdpControl {
     Frame(String, String, SocketAddr, Vec<u8>) // Node name, local port, remote port, encrypted frame
@@ -19,18 +22,20 @@ enum UdpProto {
 struct PingNode {
     rescan: bool,
     notify: bool,
+    cohort: u8,
     sbox: Option<SalsaBox>,
-    ports: Vec<PingPort>
+    ports: Vec<PingPort>,
 }
 impl PingNode {
-    fn from(runtime: &RwLock<Runtime>, node: &Node) -> PingNode {
+    fn from(runtime: &RwLock<Runtime>, node: &Node, cohort: &mut std::iter::Cycle<std::ops::Range<u8>>) -> PingNode {
         let mut keybytes: [u8; 32] = [0; 32];
         keybytes.copy_from_slice(&base64::decode(&node.pubkey).unwrap());
         PingNode {
             rescan: true,
             notify: true,
+            cohort: cohort.next().unwrap(),
             sbox: Some(SalsaBox::new(&PublicKey::from(keybytes), runtime.read().unwrap().privkey.as_ref().unwrap())),
-            ports: node.listen.iter().map(|port| PingPort { port: port.to_string(), route: String::new(), usable: false }).collect()
+            ports: node.listen.iter().map(|port| PingPort { port: port.to_string(), route: String::new(), usable: false, waiting: false }).collect()
         }
     }
     fn has_port(&self, port: &str) -> bool {
@@ -44,6 +49,7 @@ struct PingPort {
     port: String,
     route: String,
     usable: bool,
+    waiting: bool,
     // minrtt: u16,
 }
 enum PortState {
@@ -58,6 +64,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     let mut namebytes;
     let epoch = Instant::now();
     let (readtx, mut readrx) = sync::mpsc::channel(10);
+    let mut cohort = (0..SPREAD).cycle();
     let mut ports;
     let mut nodes: HashMap<String, PingNode> = HashMap::new();
     let mut socks = HashMap::new(); // Maps bound local IP addresses to their sockets
@@ -88,15 +95,14 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
         }
     }
 
-    let mut interval = tokio::time::interval_at(time::Instant::now() + Duration::from_secs(10), Duration::from_secs(60));
-    let mut scanned;
+    let mut tick: u64 = 0;
+    let mut interval = tokio::time::interval(Duration::from_secs((PINGFREQ/SPREAD).into()));
     loop {
-        scanned = false;
         tokio::select!{
             _ = interval.tick() => {
+                let round = (tick%SPREAD as u64) as u8;
                 for (name, node) in nodes.iter_mut() {
-                    if node.rescan && !scanned {
-                        scanned = true;
+                    if node.rescan {
                         node.rescan = false;
                         println!("Scanning node {} UDP ports", name);
                         for target in node.ports.iter_mut() {
@@ -141,8 +147,17 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         }
                     }
                     else {
+                        if round == node.cohort+1 || (round == 0 && node.cohort == SPREAD-1) {
+                            for target in node.ports.iter_mut() {
+                                if target.waiting {
+                                    println!("Node {} port {} ping timed out", name, target.port);
+                                    target.waiting = false;
+                                }
+                            }
+                        }
+                        if round != node.cohort { continue; }
                         let mut count = 0;
-                        for target in &node.ports {
+                        for target in node.ports.iter_mut() {
                             if !target.usable { count += 1; continue; }
                             let res = socks.get(&target.route);
                             if res.is_none() {
@@ -154,10 +169,12 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             if let Err(e) = sock.send_to(&frame, &target.port).await {
                                 eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
                             }
+                            else { target.waiting = true; }
                         }
-                        if count%10 == 0 { println!("Node {} has {} unusable ports", name, count); }
+                        if count > 15 { println!("Node {} has {} unusable ports", name, count); }
                     }
                 }
+                tick += 1;
             }
             res = readrx.recv() => { // UdpControl messages from udpreader tasks
                 match res.unwrap() {
@@ -202,7 +219,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             },
                             None => {
                                 println!("Learned new port {} for node {} with route {}", remote, name, route);
-                                node.ports.push(PingPort { port: remote.clone(), route: route, usable: true });
+                                node.ports.push(PingPort { port: remote.clone(), route: route, usable: true, waiting: false });
                                 node.ports.last_mut().unwrap()
                             }
                         };
@@ -227,6 +244,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     println!("Marked {} as pingable via {}", port.port, port.route);
                                 }
                                 println!("Node {} port {} rtt {}ms", name, port.port, epoch.elapsed().as_millis() as u64-value);
+                                port.waiting = false;
                             },
                             p => {
                                 eprintln!("Received unexpected protocol message {:?} from {}", p, remote);
@@ -252,11 +270,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 pingnode.notify = !external;
                                 for port in &node.listen {
                                     if pingnode.has_port(port) { continue; }
-                                    pingnode.ports.push(PingPort { port: port.clone(), route: String::new(), usable: false });
+                                    pingnode.ports.push(PingPort { port: port.clone(), route: String::new(), usable: false, waiting: false });
                                 }
                             },
                             None => {
-                                nodes.insert(name, PingNode::from(&config.runtime, node));
+                                nodes.insert(name, PingNode::from(&config.runtime, node, &mut cohort));
                             }
                         }
                     },
