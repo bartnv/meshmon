@@ -170,19 +170,13 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 eprintln!("Protocol desync: received Ports before Crypt from {}; dropping", conn.nodename);
                                 break 'select;
                             }
-                            let mut config = config.write().unwrap();
-                            if let Some(mut entry) = config.nodes.iter_mut().find(|i| i.name == node) {
-                                if ports != entry.listen {
-                                    entry.listen = ports.clone();
-                                    config.modified = true;
-                                    control.push(Control::Relay(conn.nodename.clone(), Protocol::Ports { node, ports }));
-                                }
-                            }
+                            control.push(Control::Ports(conn.nodename.clone(), node, ports));
+                            let mut config = config.read().unwrap();
                             if conn.state == ConnState::Encrypted {
                                 let runtime = config.runtime.read().unwrap();
                                 if active {
                                     if !runtime.graph.has_path(mynode, &conn.nodename) {
-                                        for edge in runtime.graph.raw_edges() { // TODO: change to a petgraph::visit function
+                                        for edge in runtime.graph.raw_edges() {
                                             frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
                                         }
                                     }
@@ -276,6 +270,9 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         },
                         Protocol::Check { step } => {
                             if step == 1 { frames.push(build_frame(&sbox, Protocol::Check { step: 2 })); }
+                        },
+                        Protocol::Scan { from, to } => {
+                            control.push(Control::Scan(from, to));
                         },
                         p => {
                             eprintln!("Received unexpected protocol message {:?} on TCP task", p);

@@ -69,14 +69,18 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let fromidx = match runtime.graph.find_node(&from) {
                     Some(idx) => idx,
                     None => {
-                        udpmsgs.push(Control::NewNode(from.clone()));
+                        if config.nodes.iter().find(|node| node.name == from).is_some() {
+                            udpmsgs.push(Control::ScanNode(from.clone(), false));
+                        }
                         runtime.graph.add_node(from.clone())
                     }
                 };
                 let toidx = match runtime.graph.find_node(&to) {
                     Some(idx) => idx,
                     None => {
-                        udpmsgs.push(Control::NewNode(to.clone()));
+                        if config.nodes.iter().find(|node| node.name == to).is_some() {
+                            udpmsgs.push(Control::ScanNode(to.clone(), false));
+                        }
                         runtime.graph.add_node(to.clone())
                     }
                 };
@@ -130,25 +134,41 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
             },
+            Control::Ports(from, node, ports) => {
+                let mut config = aconfig.write().unwrap();
+                if let Some(mut entry) = config.nodes.iter_mut().find(|i| i.name == node) {
+                    if ports != entry.listen {
+                        entry.listen = ports.clone();
+                        config.modified = true;
+                        relaymsgs.push((from, Protocol::Ports { node, ports }, false));
+                    }
+                }
+            },
             Control::Relay(from, proto) => {
                 relaymsgs.push((from, proto, false));
             },
-            Control::Scan(node) => {
-                directmsgs.push((myname.clone(), Protocol::Scan { from: myname.clone(), to: node }));
+            Control::Scan(from, to) => {
+                if to == myname {
+                    udpmsgs.push(Control::ScanNode(from, true));
+                }
+                else {
+                    directmsgs.push((to.clone(), Protocol::Scan { from, to }));
+                }
             },
             _ => {
                 panic!("Received unexpected Control message on control task");
             }
         }
+
+        let mut targets: Vec<(sync::mpsc::Sender<Control>, Control)> = vec![];
         if !relaymsgs.is_empty() {
             let config = aconfig.read().unwrap();
             let runtime = config.runtime.read().unwrap();
             for (from, proto, broadcast) in relaymsgs.drain(..) {
-                let mut targets: Vec<sync::mpsc::Sender<Control>> = vec![];
                 if broadcast {
                     for (name, tx) in &peers {
                         if *name == from { continue; }
-                        targets.push(tx.clone());
+                        targets.push((tx.clone(), Control::Send(proto.clone())));
                     }
                 }
                 else {
@@ -157,21 +177,13 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         match peers.get(&runtime.msp[peer]) {
                             Some(tx) => {
                                 println!("Relaying {:?} to {}", proto, runtime.msp[peer]);
-                                targets.push(tx.clone());
+                                targets.push((tx.clone(), Control::Send(proto.clone())));
                             },
                             None => {
                                 println!("Peer {} not found", runtime.msp[peer]);
                             }
                         }
                     }
-                }
-                if !targets.is_empty() {
-                    tokio::spawn(async move {
-                        for tx in targets {
-                            let proto = proto.clone();
-                            tx.send(Control::Send(proto)).await.unwrap();
-                        }
-                    });
                 }
             }
         }
@@ -191,16 +203,27 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if let Some(path) = res {
                     if path.len() < 2 { continue; }
                     let name = &runtime.msp[*path.get(1).unwrap()];
-                    println!("Would send Scan to {}", name);
+                    match peers.get(name) {
+                        Some(tx) => {
+                            targets.push((tx.clone(), Control::Send(proto)));
+                        },
+                        None => {
+                            eprintln!("Peer {} not found for directmessage", name);
+                        }
+                    }
                 }
             }
         }
         if !udpmsgs.is_empty() {
-            let tx = udptx.clone();
-            let msgs: Vec<Control> = udpmsgs.drain(..).collect();
+            for msg in udpmsgs.drain(..) {
+                targets.push((udptx.clone(), msg));
+            }
+        }
+
+        if !targets.is_empty() {
             tokio::spawn(async move {
-                for msg in msgs.into_iter() {
-                    tx.send(msg).await.unwrap();
+                for (tx, proto) in targets {
+                    tx.send(proto).await.unwrap();
                 }
             });
         }

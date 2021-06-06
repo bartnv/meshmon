@@ -18,6 +18,7 @@ enum UdpProto {
 
 struct PingNode {
     rescan: bool,
+    notify: bool,
     sbox: Option<SalsaBox>,
     ports: Vec<PingPort>
 }
@@ -27,6 +28,7 @@ impl PingNode {
         keybytes.copy_from_slice(&base64::decode(&node.pubkey).unwrap());
         PingNode {
             rescan: true,
+            notify: true,
             sbox: Some(SalsaBox::new(&PublicKey::from(keybytes), runtime.read().unwrap().privkey.as_ref().unwrap())),
             ports: node.listen.iter().map(|port| PingPort { port: port.to_string(), route: String::new(), usable: false }).collect()
         }
@@ -45,6 +47,7 @@ struct PingPort {
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
+    let myname;
     let mut namebytes;
     let epoch = Instant::now();
     let (readtx, mut readrx) = sync::mpsc::channel(10);
@@ -53,6 +56,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     let mut socks = HashMap::new(); // Maps bound local IP addresses to their sockets
     {
         let config = config.read().unwrap();
+        myname = config.name.clone();
         namebytes = config.name.clone().into_bytes();
         namebytes.push(0);
         let runtime = config.runtime.read().unwrap();
@@ -124,7 +128,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 target.route = route;
                             }
                         }
-                        ctrltx.send(Control::Scan(name.clone())).await.unwrap();
+                        if node.notify {
+                            ctrltx.send(Control::Scan(myname.clone(), name.clone())).await.unwrap();
+                            node.notify = false;
+                        }
                     }
                     else {
                         for target in &node.ports {
@@ -214,18 +221,19 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
             }
             res = udprx.recv() => { // Messages from control task
                 match res.unwrap() {
-                    Control::NewNode(name) => {
+                    Control::ScanNode(name, external) => {
                         let config = config.read().unwrap();
                         let node = match config.nodes.iter().find(|i| i.name == name) {
                             Some(node) => node,
                             None => {
-                                eprintln!("Received Control::NewNode for nonexisted node {}", name);
+                                eprintln!("Received Control::ScanNode for nonexisting node {}", name);
                                 continue;
                             }
                         };
                         match nodes.get_mut(&name) {
                             Some(pingnode) => {
                                 pingnode.rescan = true;
+                                pingnode.notify = !external;
                                 for port in &node.listen {
                                     if pingnode.has_port(port) { continue; }
                                     pingnode.ports.push(PingPort { port: port.clone(), route: String::new(), usable: false });

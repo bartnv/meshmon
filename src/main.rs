@@ -121,12 +121,13 @@ pub enum Control {
     Tick,
     NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for control messages to the TCP task)
     DropPeer(String), // Node name
-    NewNode(String), // Node name
     NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
     DropLink(String, String, String), // Sender name, link from, link to
+    Ports(String, String, Vec<String>), // From node, about node, ports
     Relay(String, Protocol), // Sender name, protocol message
     Send(Protocol), // Protocol message to send
-    Scan(String), // Node name we just scanned
+    Scan(String, String), // From node, to node
+    ScanNode(String, bool), // Node name to (re)scan, initiated externally
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
