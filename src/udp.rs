@@ -43,7 +43,14 @@ impl PingNode {
 struct PingPort {
     port: String,
     route: String,
-    usable: bool
+    usable: bool,
+    // minrtt: u16,
+}
+enum PortState {
+    New,
+    Init(u8), // Consecutive successes
+    Ok,
+    Loss(u8), // Consecutive failures
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
@@ -134,8 +141,9 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         }
                     }
                     else {
+                        let mut count = 0;
                         for target in &node.ports {
-                            if !target.usable { continue; }
+                            if !target.usable { count += 1; continue; }
                             let res = socks.get(&target.route);
                             if res.is_none() {
                                 eprintln!("Failed to find local UDP socket {}", target.route);
@@ -147,6 +155,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
                             }
                         }
+                        if count%10 == 0 { println!("Node {} has {} unusable ports", name, count); }
                     }
                 }
             }
@@ -181,12 +190,19 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         }
                         let sock = res.unwrap();
 
+                        let route = sa.ip().to_string();
                         let res = node.ports.iter_mut().find(|p| p.port == remote);
                         let port = match res {
-                            Some(port) => port,
+                            Some(port) => {
+                                if port.route != route {
+                                    println!("Learned new route {} for node {} port {}", route, name, remote);
+                                    port.route = route;
+                                }
+                                port
+                            },
                             None => {
-                                eprintln!("Learned new port {} for node {} with route {}", remote, name, sa.ip());
-                                node.ports.push(PingPort { port: remote.clone(), route: sa.ip().to_string(), usable: true });
+                                println!("Learned new port {} for node {} with route {}", remote, name, route);
+                                node.ports.push(PingPort { port: remote.clone(), route: route, usable: true });
                                 node.ports.last_mut().unwrap()
                             }
                         };
