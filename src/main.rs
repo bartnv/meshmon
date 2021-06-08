@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config = Arc::new(RwLock::new(
             Config {
                 name: args.value_of("name").unwrap_or("MyName").to_string(),
-                listen: vec!["0.0.0.0:7531".to_owned()],
+                listen: vec!["[::]:7531".to_owned()],
                 privkey,
                 nodes: Vec::new(),
                 targetpeers: 3,
@@ -204,6 +204,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     else { config = Arc::new(RwLock::new(toml::from_str(&fs::read_to_string("config.toml").await?)?)); }
+    let args = args.subcommand_matches("run").unwrap();
 
     println!("Starting meshmon {}", VERSION);
     {
