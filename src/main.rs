@@ -168,15 +168,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .version(VERSION)
         .author("Bart Noordervliet <bart@mmvi.nl>")
         .about("A distributed full-mesh network monitor")
-        .arg(Arg::with_name("acceptnewnodes").short("a").long("accept").help("Auto-accept new nodes"))
-        .arg(
-            Arg::with_name("connect").short("c").long("connect").help("Connect to this <address:port>")
-                .multiple(true).takes_value(true).number_of_values(1)
-        )
-        .arg(Arg::with_name("http").short("h").long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
         .subcommand(SubCommand::with_name("init")
             .about("Create a new configuration file and exit")
             .arg(Arg::with_name("name").short("n").long("name").takes_value(true).help("The name for this node"))
+        )
+        .subcommand(SubCommand::with_name("run")
+            .about("Run the monitor")
+            .arg(Arg::with_name("acceptnewnodes").short("a").long("accept").help("Auto-accept new nodes"))
+            .arg(
+                Arg::with_name("connect").short("c").long("connect").help("Connect to this <address:port>")
+                    .multiple(true).takes_value(true).number_of_values(1)
+            )
+            .arg(Arg::with_name("http").short("h").long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
         )
         .get_matches();
     let config: Arc<RwLock<Config>>;
@@ -197,6 +200,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ));
         let data = toml::to_string_pretty(&*config).unwrap();
         fs::write("config.toml", data).await.unwrap();
+        println!("Wrote template configuration file to 'config.toml'");
         return Ok(());
     }
     else { config = Arc::new(RwLock::new(toml::from_str(&fs::read_to_string("config.toml").await?)?)); }
