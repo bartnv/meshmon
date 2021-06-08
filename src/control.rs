@@ -191,18 +191,18 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             let config = aconfig.read().unwrap();
             let runtime = config.runtime.read().unwrap();
             for (to, proto) in directmsgs.drain(..) {
-                let tonode = match runtime.msp.find_node(&to) {
+                let tonode = match runtime.graph.find_node(&to) {
                     Some(idx) => idx,
                     None => {
-                        eprintln!("Node {} not found in MSP", to);
+                        eprintln!("Node {} not found in graph", to);
                         continue;
                     }
                 };
-                let mut paths = algo::all_simple_paths(&runtime.msp, mynode, tonode, 0, None);
+                let mut paths = algo::all_simple_paths(&runtime.graph, mynode, tonode, 0, None);
                 let res: Option<Vec<graph::NodeIndex>> = paths.next();
                 if let Some(path) = res {
                     if path.len() < 2 { continue; }
-                    let name = &runtime.msp[*path.get(1).unwrap()];
+                    let name = &runtime.graph[*path.get(1).unwrap()];
                     match peers.get(name) {
                         Some(tx) => {
                             targets.push((tx.clone(), Control::Send(proto)));

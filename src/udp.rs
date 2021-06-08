@@ -249,7 +249,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if !port.usable {
                                     port.usable = true;
                                     port.route = sa.ip().to_string();
-                                    println!("Marked {} as pingable via {}", port.port, port.route);
+                                    println!("Marked {} as pingable via {}", port.ip, port.route);
                                 }
                                 let rtt = (epoch.elapsed().as_millis() as u64-value) as u16;
                                 if rtt < port.minrtt { port.minrtt = rtt; }
