@@ -1,11 +1,11 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{ aead::Aead, PublicKey, SecretKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
-use std::{ str, time::{ Duration, Instant }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
+use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
 use tokio::{ fs, net, sync };
 use sysinfo::{ SystemExt };
 use petgraph::{ graph, graph::UnGraph };
-use clap::{ Arg, App, SubCommand };
+use clap::{ Arg, App, AppSettings, SubCommand };
 use pnet::datalink::interfaces;
 use warp::Filter;
 use generic_array::GenericArray;
@@ -19,7 +19,7 @@ static INDEX_FILE: &str = include_str!("index.html");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
-    fn drop_detached_nodes(&mut self) -> usize;
+    fn drop_detached_nodes(&mut self) -> Vec<String>;
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool;
     fn print(&self);
 }
@@ -27,17 +27,22 @@ impl GraphExt for UnGraph<String, u8> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
         self.node_indices().find(|i| self[*i] == name)
     }
-    fn drop_detached_nodes(&mut self) -> usize {
+    fn drop_detached_nodes(&mut self) -> Vec<String> {
         let mynode = graph::NodeIndex::new(0);
-        let start = self.node_count();
         let scc = petgraph::algo::kosaraju_scc(&*self);
+        let mut dropped: Vec<String> = vec![];
+        let mut retain: Vec<graph::NodeIndex> = vec![];
         for group in scc {
             if group.contains(&mynode) {
-                self.retain_nodes(|_, nodeidx| group.contains(&nodeidx));
-                break;
+                retain.extend_from_slice(&group);
+                continue;
+            }
+            for nodeidx in group {
+                dropped.push(self[nodeidx].clone());
             }
         }
-        start - self.node_count()
+        if retain.len() > 0 { self.retain_nodes(|_, nodeidx| retain.contains(&nodeidx)); }
+        dropped
     }
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool {
         match self.find_node(to) {
@@ -86,6 +91,7 @@ struct Runtime {
     graph: UnGraph<String, u8>,
     msp: UnGraph<String, u8>,
     acceptnewnodes: bool,
+    log: Vec<(u64, String)> // Unix timestamp, log message
 }
 
 #[derive(Debug)]
@@ -128,6 +134,7 @@ pub enum Control {
     Send(Protocol), // Protocol message to send
     Scan(String, String), // From node, to node
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
+    Update(String), // Status update
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -164,10 +171,11 @@ impl Protocol {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let args = App::new("meshmon")
+    let app = App::new("meshmon")
         .version(VERSION)
         .author("Bart Noordervliet <bart@mmvi.nl>")
         .about("A distributed full-mesh network monitor")
+        .setting(AppSettings::SubcommandRequiredElseHelp)
         .subcommand(SubCommand::with_name("init")
             .about("Create a new configuration file and exit")
             .arg(Arg::with_name("name").short("n").long("name").takes_value(true).help("The name for this node"))
@@ -180,8 +188,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .multiple(true).takes_value(true).number_of_values(1)
             )
             .arg(Arg::with_name("http").short("h").long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
-        )
-        .get_matches();
+        );
+    let args = app.get_matches();
     let config: Arc<RwLock<Config>>;
     if let Some(args) = args.subcommand_matches("init") {
         let mut rng = rand::rngs::OsRng;
@@ -344,7 +352,8 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
     struct JsonGraph {
         error: Option<String>,
         nodes: Vec<JsonNode>,
-        edges: Vec<JsonEdge>
+        edges: Vec<JsonEdge>,
+        log: Vec<(u64, String)>
     }
     #[derive(Serialize)]
     struct JsonNode {
@@ -361,7 +370,7 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
     let mut res: JsonGraph = Default::default();
     if let Some(req) = form.get("req") {
         match req.as_str() {
-            "graph" => {
+            "update" => {
                 let config = config.read().unwrap();
                 let runtime = config.runtime.read().unwrap();
                 let nodes = runtime.graph.raw_nodes();
@@ -375,7 +384,14 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
                     };
                     res.edges.push(JsonEdge { from: edge.source().index(), to: edge.target().index(), color });
                 }
-            }
+                if let Some(since) = form.get("since") {
+                    let since: u64 = since.parse().unwrap_or(0);
+                    for (ts, msg) in &runtime.log {
+                        if *ts <= since { continue; }
+                        res.log.push((*ts, msg.clone()));
+                    }
+                }
+            },
             _ => {
                 res.error = Some("Invalid request".to_string());
             }
@@ -396,4 +412,8 @@ pub fn encrypt_frame(sbox: &SalsaBox, plaintext: &[u8]) -> Vec<u8> {
 pub fn decrypt_frame(sbox: &Option<SalsaBox>, payload: &[u8]) -> Result<Vec<u8>, crypto_box::aead::Error> {
     let nonce = GenericArray::from_slice(&payload[0..24]);
     sbox.as_ref().unwrap().decrypt(nonce, &payload[24..])
+}
+
+pub fn unixtime() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }

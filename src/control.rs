@@ -1,7 +1,7 @@
 use std::{ sync::RwLock, sync::Arc, mem::drop, collections::HashMap };
 use tokio::{ fs, sync };
 use petgraph::{ graph, graph::UnGraph, dot, data::FromElements, algo };
-use crate::{ Config, Node, Control, Protocol, GraphExt };
+use crate::{ Config, Node, Control, Protocol, GraphExt, unixtime };
 
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>) {
     let mut peers = HashMap::new();
@@ -72,6 +72,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         if config.nodes.iter().find(|node| node.name == from).is_some() {
                             udpmsgs.push(Control::ScanNode(from.clone(), false));
                         }
+                        if peers.len() > 0 {
+                            let text = format!("Node {} joined the network", from);
+                            runtime.log.push((unixtime(), text));
+                        }
                         runtime.graph.add_node(from.clone())
                     }
                 };
@@ -80,6 +84,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     None => {
                         if config.nodes.iter().find(|node| node.name == to).is_some() {
                             udpmsgs.push(Control::ScanNode(to.clone(), false));
+                        }
+                        if peers.len() > 0 {
+                            let text = format!("Node {} joined the network", to);
+                            runtime.log.push((unixtime(), text));
                         }
                         runtime.graph.add_node(to.clone())
                     }
@@ -110,14 +118,23 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if let (Some(fnode), Some(tnode)) = (fres, tres) {
                     if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                         runtime.graph.remove_edge(edge);
-                        let count = runtime.graph.drop_detached_nodes();
-                        if count > 0 { println!("Lost {} node{}", count, match count { 1 => "", _ => "s" }); }
-                        relaymsgs.push((sender, Protocol::Drop { from, to }, true));
+                        let dropped = runtime.graph.drop_detached_nodes();
+                        if dropped.len() > 0 { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
+                        for node in dropped {
+                            let text = format!("Node {} left the network", node);
+                            runtime.log.push((unixtime(), text));
+                        }
                     }
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::NewPeer(name, tx) => {
+                if peers.len() == 0 {
+                    let config = aconfig.read().unwrap();
+                    let mut runtime = config.runtime.write().unwrap();
+                    let text = format!("Joined the network with {} other nodes", runtime.graph.node_count()-1);
+                    runtime.log.push((unixtime(), text));
+                }
                 peers.insert(name, tx);
             },
             Control::DropPeer(name) => {
@@ -129,8 +146,12 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         runtime.graph.remove_edge(edge);
                         relaymsgs.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
                     }
-                    let count = runtime.graph.drop_detached_nodes();
-                    if count > 0 { println!("Lost {} node{}", count, match count { 1 => "", _ => "s" }); }
+                    let dropped = runtime.graph.drop_detached_nodes();
+                    if dropped.len() > 0 { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
+                    for node in dropped {
+                        let text = format!("Node {} left the network", node);
+                        runtime.log.push((unixtime(), text));
+                    }
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
             },
@@ -153,6 +174,16 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
                 else {
                     directmsgs.push((to.clone(), Protocol::Scan { from, to }));
+                }
+            },
+            Control::Update(text) => {
+                println!("{}", text);
+                let config = aconfig.read().unwrap();
+                let mut runtime = config.runtime.write().unwrap();
+                runtime.log.push((unixtime(), text));
+                if runtime.log.len() > 25 {
+                    let drain = runtime.log.len()-25;
+                    runtime.log.drain(0..drain);
                 }
             },
             _ => {

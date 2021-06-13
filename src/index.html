@@ -4,29 +4,52 @@
 <script src="https://unpkg.com/jquery/dist/jquery.min.js"></script>
 <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 <script>
+  'use strict';
   $().ready(function() {
-    window.graph = new vis.Network($('#graph')[0], {}, {});
+    window.graph = new vis.Network($('#graph')[0], {},
+      {
+        layout: { randomSeed: '0.4362377321956592:1623528045167' },
+        nodes: { shape: "dot", size: 16 },
+        edges: { smooth: { type: "continuous", forceDirection: "none", roundness: 0 } }
+      }
+    );
+    window.lastupdate = 0;
     getGraph();
     setInterval(getGraph, 15000);
   });
   function getGraph() {
-    jQuery.post('/rpc', { req: 'graph' }, renderGraph, 'json');
+    jQuery.post('/rpc', { req: 'update', since: lastupdate }, renderGraph, 'json');
   }
   function renderGraph(data) {
     let nodes = new vis.DataSet(data.nodes);
     let edges = new vis.DataSet(data.edges);
     graph.setData({ nodes: nodes, edges: edges });
+    for (let entry of data.log) {
+      let ts = parseInt(entry[0]);
+      if (ts > lastupdate) lastupdate = ts;
+      let date = new Date(ts * 1000);
+      $('#log').append(date.toISOString().substring(0, 16).replace('T', ' ') + ' ' + entry[1] + '<br>');
+    }
+    if (data.log.length) $('#log').prop('scrollTop', $('#log').height());
   }
 </script>
 <style>
+*, *:before, *:after { box-sizing: border-box; }
 BODY { margin: 0; }
 #graph {
   width: 100vw;
-  height: 100vh;
+  height: 80vh;
+}
+#log {
+  width: 100vw;
+  height: 20vh;
+  border-top: solid grey 1px;
+  overflow: auto;
 }
 </style>
 </head>
 <body>
 <div id="graph"></div>
+<div id="log"></div>
 </body>
 </html>

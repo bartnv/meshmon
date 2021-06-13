@@ -48,18 +48,35 @@ impl PingNode {
     }
 }
 struct PingPort {
+    label: &'static str,
     ip: String,
     port: u16,
     route: String,
     usable: bool,
     waiting: bool,
+    sent: u32,
     minrtt: u16,
     state: PortState
 }
 impl PingPort {
     fn from(port: &str, route: Option<String>, usable: bool) -> PingPort {
         let sa: SocketAddr = port.parse().unwrap();
-        PingPort { ip: sa.ip().to_string(), port: sa.port(), route: route.unwrap_or(String::new()), usable, waiting: false, minrtt: u16::MAX, state: PortState::New }
+        let private = isprivate(sa.ip());
+        let label = match sa {
+            SocketAddr::V4(_) => {
+                match private {
+                    true => "IPv4-private",
+                    false => "IPv4-global"
+                }
+            },
+            SocketAddr::V6(_) => {
+                match private {
+                    true => "IPv6-private",
+                    false => "IPv6-global"
+                }
+            }
+        };
+        PingPort { label, ip: sa.ip().to_string(), port: sa.port(), route: route.unwrap_or(String::new()), usable, waiting: false, sent: 0, minrtt: u16::MAX, state: PortState::New }
     }
 }
 enum PortState {
@@ -160,6 +177,27 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if target.waiting {
                                     println!("Node {:8} {:39} -> {:39} ping timed out", name, target.route, target.ip);
                                     target.waiting = false;
+                                    match target.state {
+                                        PortState::New => { target.state = PortState::Init(0); },
+                                        PortState::Init(n) if target.sent > 15 => {
+                                            println!("Failed to initialize port with 15 pings; giving up");
+                                            target.sent = 0;
+                                            target.usable = false;
+                                        },
+                                        PortState::Init(ref mut n) => { *n = 0; },
+                                        PortState::Ok => { target.state = PortState::Loss(1); },
+                                        PortState::Loss(ref mut n) => {
+                                            *n += 1;
+                                            if *n == 3 {
+                                                ctrltx.send(Control::Update(format!("{} {} is down", name, target.label))).await.unwrap();
+                                            }
+                                            if *n == 15 {
+                                                println!("Last 15 pings dropped; giving up on port");
+                                                target.sent = 0;
+                                                target.usable = false;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -177,7 +215,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             if let Err(e) = sock.send_to(&frame, (target.ip.as_ref(), target.port)).await {
                                 eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
                             }
-                            else { target.waiting = true; }
+                            else {
+                                target.sent += 1;
+                                target.waiting = true;
+                            }
                         }
                         if count > 15 { println!("Node {} has {} unusable ports", name, count); }
                     }
@@ -255,6 +296,21 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if rtt < port.minrtt { port.minrtt = rtt; }
                                 println!("Node {:8} {:39} -> {:39} rtt {:>4}ms best {:>4}ms", name, sa.ip(), port.ip, rtt, port.minrtt);
                                 port.waiting = false;
+                                match port.state {
+                                    PortState::New => { port.state = PortState::Init(1); },
+                                    PortState::Init(n) if n == 5 => {
+                                        println!("Port initialized with minrtt {}", port.minrtt);
+                                        port.state = PortState::Ok;
+                                    },
+                                    PortState::Init(ref mut n) => { *n += 1; },
+                                    PortState::Ok => { },
+                                    PortState::Loss(n) => {
+                                        if n >= 3 {
+                                            ctrltx.send(Control::Update(format!("{} {} is up after {} losses", name, port.label, n))).await.unwrap();
+                                        }
+                                        port.state = PortState::Ok;
+                                    }
+                                }
                             },
                             p => {
                                 eprintln!("Received unexpected protocol message {:?} from {}", p, remote);
