@@ -229,10 +229,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         continue;
                     }
                 };
-                let mut paths = algo::all_simple_paths(&runtime.graph, mynode, tonode, 0, None);
-                let res: Option<Vec<graph::NodeIndex>> = paths.next();
-                if let Some(path) = res {
-                    if path.len() < 2 { continue; }
+                let res = algo::astar(&runtime.graph, mynode, |node| node == tonode, |e| *e.weight(), |_| 0);
+                if let Some((cost, path)) = res {
                     let name = &runtime.graph[*path.get(1).unwrap()];
                     match peers.get(name) {
                         Some(tx) => {
