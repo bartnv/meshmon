@@ -124,9 +124,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             let text = format!("Node {} left the network", node);
                             runtime.log.push((unixtime(), text));
                         }
+                        relaymsgs.push((sender, Protocol::Drop { from, to }, true));
+                        runtime.msp = calculate_msp(&runtime.graph);
                     }
                 }
-                runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::NewPeer(name, tx) => {
                 if peers.len() == 0 {
