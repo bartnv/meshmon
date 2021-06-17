@@ -84,6 +84,7 @@ enum PortState {
     Init(u8), // Consecutive successes
     Ok,
     Loss(u8), // Consecutive failures
+    Backoff(u8) // Exponential backoff
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
@@ -192,10 +193,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                                 ctrltx.send(Control::Update(format!("{} {} is down", name, target.label))).await.unwrap();
                                             }
                                             if *n == 15 {
-                                                println!("Last 15 pings dropped; giving up on port");
-                                                target.sent = 0;
-                                                target.usable = false;
+                                                target.state = PortState::Backoff(1);
                                             }
+                                        },
+                                        PortState::Backoff(ref mut n) => {
+                                            *n += 1;
                                         }
                                     }
                                 }
@@ -205,6 +207,9 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let mut count = 0;
                         for target in node.ports.iter_mut() {
                             if !target.usable { count += 1; continue; }
+                            if let PortState::Backoff(n) = target.state {
+                                if round%(n^2) != 0 { continue; }
+                            }
                             let res = socks.get(&target.route);
                             if res.is_none() {
                                 eprintln!("Failed to find local UDP socket {}", target.route);
@@ -217,7 +222,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             }
                             else {
                                 target.sent += 1;
-                                target.waiting = true;
+                                if !std::matches!(target.state, PortState::Backoff(_)) { target.waiting = true; }
                             }
                         }
                         if count > 15 { println!("Node {} has {} unusable ports", name, count); }
@@ -308,6 +313,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         if n >= 3 {
                                             ctrltx.send(Control::Update(format!("{} {} is up after {} losses", name, port.label, n))).await.unwrap();
                                         }
+                                        port.state = PortState::Ok;
+                                    },
+                                    PortState::Backoff(n) => {
+                                        ctrltx.send(Control::Update(format!("{} {} is up", name, port.label))).await.unwrap();
                                         port.state = PortState::Ok;
                                     }
                                 }
