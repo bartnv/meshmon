@@ -171,7 +171,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 break 'select;
                             }
                             control.push(Control::Ports(conn.nodename.clone(), node, ports));
-                            let mut config = config.read().unwrap();
+                            let config = config.read().unwrap();
                             if conn.state == ConnState::Encrypted {
                                 let runtime = config.runtime.read().unwrap();
                                 if active {

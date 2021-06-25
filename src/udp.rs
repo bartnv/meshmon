@@ -1,14 +1,15 @@
-use std::{ str, time::{ Duration, Instant }, net::{ SocketAddr, IpAddr }, default::Default, sync::RwLock, sync::Arc, collections::HashMap, convert::TryInto };
+use std::{ str, time::{ Duration, Instant }, net::{ SocketAddr, IpAddr }, default::Default, sync::RwLock, sync::Arc, collections::{ HashMap, VecDeque }, convert::TryInto };
 use crypto_box::{ PublicKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
 use rmp_serde::decode::Error as DecodeError;
-use tokio::{ net, sync, time };
+use tokio::{ net, sync };
 use pnet::{ datalink::interfaces, ipnetwork::IpNetwork };
 use lazy_static::lazy_static;
 use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame };
 
 static PINGFREQ: u8 = 60;
 static SPREAD: u8 = 6;
+static HISTSIZE: usize = 60;
 
 #[derive(Debug)]
 enum UdpControl {
@@ -56,7 +57,9 @@ struct PingPort {
     waiting: bool,
     sent: u32,
     minrtt: u16,
-    state: PortState
+    state: PortState,
+    hist: VecDeque<u16>,
+    stats: PingStats
 }
 impl PingPort {
     fn from(port: &str, route: Option<String>, usable: bool) -> PingPort {
@@ -76,15 +79,37 @@ impl PingPort {
                 }
             }
         };
-        PingPort { label, ip: sa.ip().to_string(), port: sa.port(), route: route.unwrap_or(String::new()), usable, waiting: false, sent: 0, minrtt: u16::MAX, state: PortState::New }
+        PingPort {
+            label,
+            ip: sa.ip().to_string(),
+            port: sa.port(),
+            route: route.unwrap_or_default(),
+            usable,
+            waiting: false,
+            sent: 0,
+            minrtt: u16::MAX,
+            state: PortState::New,
+            hist: VecDeque::with_capacity(HISTSIZE),
+            stats: Default::default()
+        }
+    }
+    fn push_hist(&mut self, result: u16) {
+        if self.hist.len() >= HISTSIZE { self.hist.pop_back().unwrap(); }
+        self.hist.push_front(result);
     }
 }
+#[derive(Debug)]
 enum PortState {
     New,
     Init(u8), // Consecutive successes
     Ok,
     Loss(u8), // Consecutive failures
     Backoff(u8) // Exponential backoff
+}
+#[derive(Default, Debug)]
+struct PingStats {
+    losspct: u8,
+    bestseq: u16
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
@@ -93,7 +118,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     let epoch = Instant::now();
     let (readtx, mut readrx) = sync::mpsc::channel(10);
     let mut cohort = (0..SPREAD).cycle();
-    let mut ports;
+    let ports;
     let mut nodes: HashMap<String, PingNode> = HashMap::new();
     let mut socks = HashMap::new(); // Maps bound local IP addresses to their sockets
     {
@@ -176,12 +201,13 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         if round == node.cohort+1 || (round == 0 && node.cohort == SPREAD-1) {
                             for target in node.ports.iter_mut() {
                                 if target.waiting {
-                                    println!("Node {:8} {:39} -> {:39} ping timed out", name, target.route, target.ip);
                                     target.waiting = false;
+                                    println!("Node {:10} {:39} -> {:39}  timed out", name, target.route, target.ip);
+                                    target.push_hist(0);
                                     match target.state {
                                         PortState::New => { target.state = PortState::Init(0); },
-                                        PortState::Init(n) if target.sent > 15 => {
-                                            println!("Failed to initialize port with 15 pings; giving up");
+                                        PortState::Init(_) if target.sent > 15 => {
+                                            println!("Node {} intf {} failed to initialize with 15 pings; giving up", name, target.ip);
                                             target.sent = 0;
                                             target.usable = false;
                                         },
@@ -189,6 +215,12 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         PortState::Ok => { target.state = PortState::Loss(1); },
                                         PortState::Loss(ref mut n) => {
                                             *n += 1;
+                                            if *n >= 3 {
+                                                while let Some(i) = target.hist.back() {
+                                                    if *i == 0 { target.hist.pop_back(); }
+                                                    else { break; }
+                                                }
+                                            }
                                             if *n == 3 {
                                                 ctrltx.send(Control::Update(format!("{} {} is down", name, target.label))).await.unwrap();
                                             }
@@ -209,6 +241,9 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             if !target.usable { count += 1; continue; }
                             if let PortState::Backoff(n) = target.state {
                                 if round%(n^2) != 0 { continue; }
+                            }
+                            else if tick%5 == 0 && !std::matches!(target.state, PortState::Init(_)) {
+                                check_stats(&name, target, false);
                             }
                             let res = socks.get(&target.route);
                             if res.is_none() {
@@ -263,7 +298,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let route = sa.ip().to_string();
                         let remoteip = remote.ip().to_string();
                         let res = node.ports.iter_mut().find(|p| p.ip == remoteip);
-                        let port = match res {
+                        let mut port = match res {
                             Some(port) => {
                                 if port.route != route {
                                     println!("Learned new route {} for node {} port {}", route, name, remote);
@@ -292,6 +327,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                             },
                             Protocol::Pong { value } => {
+                                let mut check = false;
                                 if !port.usable {
                                     port.usable = true;
                                     port.route = sa.ip().to_string();
@@ -299,13 +335,27 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                                 let rtt = (epoch.elapsed().as_millis() as u64-value) as u16;
                                 if rtt < port.minrtt { port.minrtt = rtt; }
-                                println!("Node {:8} {:39} -> {:39} rtt {:>4}ms best {:>4}ms", name, sa.ip(), port.ip, rtt, port.minrtt);
-                                port.waiting = false;
+                                if port.stats.bestseq == 0 {
+                                    println!("Node {:10} {:39} -> {:39} {:>4}ms ({:?})", name, sa.ip(), port.ip, rtt, port.state);
+                                }
+                                else if port.stats.bestseq >= rtt {
+                                    println!("Node {:10} {:39} -> {:39} {:>4}ms", name, sa.ip(), port.ip, rtt);
+                                }
+                                else {
+                                    let baseline = match port.stats.bestseq-port.minrtt { 0 => 1, n => n };
+                                    let n = (rtt-port.stats.bestseq)/baseline;
+                                    println!("Node {:10} {:39} -> {:39} {:>4}ms (+{}/{}/{}n)", name, sa.ip(), port.ip, rtt, rtt-port.stats.bestseq, baseline, n);
+                                }
+                                if port.waiting { // Probe pings don't have waiting set
+                                    port.waiting = false;
+                                    port.push_hist(match rtt { 0 => 1, n => n });
+                                }
                                 match port.state {
                                     PortState::New => { port.state = PortState::Init(1); },
                                     PortState::Init(n) if n == 5 => {
                                         println!("Port initialized with minrtt {}", port.minrtt);
                                         port.state = PortState::Ok;
+                                        check = true;
                                     },
                                     PortState::Init(ref mut n) => { *n += 1; },
                                     PortState::Ok => { },
@@ -315,11 +365,12 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         }
                                         port.state = PortState::Ok;
                                     },
-                                    PortState::Backoff(n) => {
+                                    PortState::Backoff(_) => {
                                         ctrltx.send(Control::Update(format!("{} {} is up", name, port.label))).await.unwrap();
                                         port.state = PortState::Ok;
                                     }
                                 }
+                                if check { check_stats(&name, &mut port, true); }
                             },
                             p => {
                                 eprintln!("Received unexpected protocol message {:?} from {}", p, remote);
@@ -362,6 +413,50 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     }
 }
 
+fn check_stats(name: &str, port: &mut PingPort, init: bool) {
+    let loss = port.hist.iter().fold(0, |acc, x| if *x == 0 { acc + 1 } else { acc });
+    let losspct: u8 = if loss == 0 { 0 } else { (loss*100/HISTSIZE).try_into().unwrap() };
+    if !init && losspct > port.stats.losspct {
+        println!("Node {} port {} packet loss increased to {}%", name, port.label, losspct);
+    }
+    else if !init && losspct < port.stats.losspct {
+        println!("Node {} port {} packet loss decreased to {}%", name, port.label, losspct);
+    }
+    port.stats.losspct = losspct;
+    // let mut count = 0;
+    // let mut delay = 0;
+    // for x in &port.hist {
+    //     if *x != 0 {
+    //         count += 1;
+    //         delay += x - port.minrtt;
+    //     }
+    // }
+    // if count > 0 {
+    //     let avgdelay: f32 = (delay/count).into();
+    //     if !init && avgdelay > port.stats.avgdelay*1.5 {
+    //         println!("Node {} port {} avg latency increased to {} above baseline", name, port.label, avgdelay);
+    //     }
+    //     else if !init && avgdelay < port.stats.avgdelay*0.5 {
+    //         println!("Node {} port {} avg latency decreased to {} above baseline", name, port.label, avgdelay);
+    //     }
+    //     port.stats.avgdelay = avgdelay;
+    // }
+
+    let mut count = 0;
+    let mut worst = 0;
+    for x in &port.hist { // port.hist has most recent entries in the front
+        if *x != 0 {
+            count += 1;
+            if *x > worst { worst = *x; }
+            if count == 15 { break; }
+        }
+    }
+    if count >= 15 && (port.stats.bestseq == 0 || worst < port.stats.bestseq) {
+        port.stats.bestseq = worst;
+        println!("Node {} port {} minrtt {} bestseq set to {}", name, port.ip, port.minrtt, worst);
+    }
+}
+
 async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::Sender<UdpControl>) {
     let mut buf = [0; 1500];
     loop {
@@ -371,7 +466,7 @@ async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::
                 if len < 2 { println!("Short UDP message from {}", addr); continue; }
                 let framelen = (buf[1] as usize) << 8 | buf[0] as usize; // len is little-endian
                 if len < framelen+2 { println!("Short UDP message from {}", addr); continue; }
-                let res = buf.iter().skip(2).position(|x| *x == 0);
+                let res = buf.iter().skip(2).position(|x| *x == 0); // name is null-terminated
                 if res.is_none() { println!("Invalid UDP message from {}", addr); continue; }
                 let (namebytes, payload) = buf[2..framelen+2].split_at(res.unwrap());
                 let name = String::from_utf8(namebytes.to_vec());

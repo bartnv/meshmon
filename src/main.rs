@@ -41,7 +41,7 @@ impl GraphExt for UnGraph<String, u8> {
                 dropped.push(self[nodeidx].clone());
             }
         }
-        if retain.len() > 0 { self.retain_nodes(|_, nodeidx| retain.contains(&nodeidx)); }
+        if !retain.is_empty() { self.retain_nodes(|_, nodeidx| retain.contains(&nodeidx)); }
         dropped
     }
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool {

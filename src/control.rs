@@ -69,10 +69,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let fromidx = match runtime.graph.find_node(&from) {
                     Some(idx) => idx,
                     None => {
-                        if config.nodes.iter().find(|node| node.name == from).is_some() {
+                        if config.nodes.iter().any(|node| node.name == from) {
                             udpmsgs.push(Control::ScanNode(from.clone(), false));
                         }
-                        if peers.len() > 0 {
+                        if !peers.is_empty() {
                             let text = format!("Node {} joined the network", from);
                             runtime.log.push((unixtime(), text));
                         }
@@ -82,10 +82,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let toidx = match runtime.graph.find_node(&to) {
                     Some(idx) => idx,
                     None => {
-                        if config.nodes.iter().find(|node| node.name == to).is_some() {
+                        if config.nodes.iter().any(|node| node.name == to) {
                             udpmsgs.push(Control::ScanNode(to.clone(), false));
                         }
-                        if peers.len() > 0 {
+                        if !peers.is_empty() {
                             let text = format!("Node {} joined the network", to);
                             runtime.log.push((unixtime(), text));
                         }
@@ -119,9 +119,12 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                         runtime.graph.remove_edge(edge);
                         let dropped = runtime.graph.drop_detached_nodes();
-                        if dropped.len() > 0 { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
-                        for node in dropped {
-                            let text = format!("Node {} left the network", node);
+                        if !dropped.is_empty() {
+                            let text = match dropped.len() {
+                                1 => format!("Node {} left the network", dropped[0]),
+                                n => format!("Netsplit: lost connection to {} nodes ({})", n, dropped.join(", "))
+                            };
+                            println!("{}", text);
                             runtime.log.push((unixtime(), text));
                         }
                         relaymsgs.push((sender, Protocol::Drop { from, to }, true));
@@ -130,7 +133,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
             },
             Control::NewPeer(name, tx) => {
-                if peers.len() == 0 {
+                if peers.is_empty() {
                     let config = aconfig.read().unwrap();
                     let mut runtime = config.runtime.write().unwrap();
                     let text = format!("Joined the network with {} other nodes", runtime.graph.node_count()-1);
@@ -148,7 +151,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         relaymsgs.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
                     }
                     let dropped = runtime.graph.drop_detached_nodes();
-                    if dropped.len() > 0 { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
+                    if !dropped.is_empty() { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
                     for node in dropped {
                         let text = format!("Node {} left the network", node);
                         runtime.log.push((unixtime(), text));
@@ -231,7 +234,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     }
                 };
                 let res = algo::astar(&runtime.graph, mynode, |node| node == tonode, |e| *e.weight(), |_| 0);
-                if let Some((cost, path)) = res {
+                if let Some((_, path)) = res {
                     let name = &runtime.graph[*path.get(1).unwrap()];
                     match peers.get(name) {
                         Some(tx) => {
