@@ -109,7 +109,6 @@ enum PortState {
 #[derive(Default, Debug)]
 struct PingStats {
     losspct: u8,
-    bestseq: u16
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
@@ -335,16 +334,15 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                                 let rtt = (epoch.elapsed().as_millis() as u64-value) as u16;
                                 if rtt < port.minrtt { port.minrtt = rtt; }
-                                if port.stats.bestseq == 0 {
-                                    println!("Node {:10} {:39} -> {:39} {:>4}ms ({:?})", name, sa.ip(), port.ip, rtt, port.state);
-                                }
-                                else if port.stats.bestseq >= rtt {
+                                let delaycat = match rtt-port.minrtt {
+                                  n if n > 4 => (n as f32).sqrt() as u16 - 1,
+                                  _ => 0
+                                };
+                                if delaycat == 0 {
                                     println!("Node {:10} {:39} -> {:39} {:>4}ms", name, sa.ip(), port.ip, rtt);
                                 }
                                 else {
-                                    let baseline = match port.stats.bestseq-port.minrtt { 0 => 1, n => n };
-                                    let n = (rtt-port.stats.bestseq)/baseline;
-                                    println!("Node {:10} {:39} -> {:39} {:>4}ms (+{}/{}/{}n)", name, sa.ip(), port.ip, rtt, rtt-port.stats.bestseq, baseline, n);
+                                    println!("Node {:10} {:39} -> {:39} {:>4}ms (min {}/dif {}/cat {})", name, sa.ip(), port.ip, rtt, port.minrtt, rtt-port.minrtt, delaycat);
                                 }
                                 if port.waiting { // Probe pings don't have waiting set
                                     port.waiting = false;
@@ -423,38 +421,6 @@ fn check_stats(name: &str, port: &mut PingPort, init: bool) {
         println!("Node {} port {} packet loss decreased to {}%", name, port.label, losspct);
     }
     port.stats.losspct = losspct;
-    // let mut count = 0;
-    // let mut delay = 0;
-    // for x in &port.hist {
-    //     if *x != 0 {
-    //         count += 1;
-    //         delay += x - port.minrtt;
-    //     }
-    // }
-    // if count > 0 {
-    //     let avgdelay: f32 = (delay/count).into();
-    //     if !init && avgdelay > port.stats.avgdelay*1.5 {
-    //         println!("Node {} port {} avg latency increased to {} above baseline", name, port.label, avgdelay);
-    //     }
-    //     else if !init && avgdelay < port.stats.avgdelay*0.5 {
-    //         println!("Node {} port {} avg latency decreased to {} above baseline", name, port.label, avgdelay);
-    //     }
-    //     port.stats.avgdelay = avgdelay;
-    // }
-
-    let mut count = 0;
-    let mut worst = 0;
-    for x in &port.hist { // port.hist has most recent entries in the front
-        if *x != 0 {
-            count += 1;
-            if *x > worst { worst = *x; }
-            if count == 15 { break; }
-        }
-    }
-    if count >= 15 && (port.stats.bestseq == 0 || worst < port.stats.bestseq) {
-        port.stats.bestseq = worst;
-        println!("Node {} port {} minrtt {} bestseq set to {}", name, port.ip, port.minrtt, worst);
-    }
 }
 
 async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::Sender<UdpControl>) {
