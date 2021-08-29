@@ -1,7 +1,79 @@
-use std::{ sync::RwLock, sync::Arc, mem::drop, collections::HashMap };
+use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque }, cmp::Ordering };
 use tokio::{ fs, sync };
 use petgraph::{ graph, graph::UnGraph, dot, data::FromElements, algo };
+use termion::{ raw::IntoRawMode, screen::AlternateScreen };
+use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
+use lazy_static::lazy_static;
 use crate::{ Config, Node, Control, Protocol, GraphExt, unixtime };
+
+static HISTSIZE: usize = 1440;
+static THRESHOLD: u16 = 4;
+
+#[derive(Eq)]
+struct PingResult {
+    node: String,
+    intf: String,
+    port: String,
+    min: u16,
+    last: Option<u16>,
+    hist: VecDeque<u16>,
+}
+impl PingResult {
+    fn new(node: String, intf: String, port: String) -> PingResult {
+        return PingResult { node, intf, port, min: u16::MAX, last: None, hist: VecDeque::with_capacity(HISTSIZE) };
+    }
+    fn push_hist(&mut self, result: u16) {
+        if self.hist.len() >= HISTSIZE { self.hist.pop_back().unwrap(); }
+        self.hist.push_front(result);
+    }
+}
+impl Ord for PingResult {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.node.cmp(&other.node) {
+            Ordering::Equal => {
+                match self.port.cmp(&other.port) { // TODO: better comparison for ip addresses
+                    Ordering::Equal => self.intf.cmp(&other.intf),
+                    ord => ord
+                }
+            },
+            ord => ord
+        }
+    }
+}
+impl PartialOrd for PingResult {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for PingResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node && self.port == other.port && self.intf == other.intf
+    }
+}
+
+#[derive(Default)]
+struct Data {
+    log: RwLock<VecDeque<String>>,
+    ping: RwLock<VecDeque<String>>,
+    intf: RwLock<HashMap<String, IntfStats>>,
+    results: RwLock<Vec<PingResult>>
+}
+impl Data {
+    fn push_log(&self, line: String) {
+        let mut log = self.log.write().unwrap();
+        if log.len() >= 50 { log.pop_back().unwrap(); }
+        log.push_front(line);
+    }
+    fn push_ping(&self, line: String) {
+        let mut ping = self.ping.write().unwrap();
+        if ping.len() >= 50 { ping.pop_back().unwrap(); }
+        ping.push_front(line);
+    }
+}
+struct IntfStats {
+    min: u16,
+    lag: u16
+}
 
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>) {
     let mut peers = HashMap::new();
@@ -14,7 +86,25 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
     let mut directmsgs: Vec<(String, Protocol)> = vec![];
     let mut udpmsgs: Vec<Control> = vec![];
+    let data: Arc<Data> = Arc::new(Default::default());
+
+    let mut term = match aconfig.read().unwrap().runtime.read().unwrap().tui {
+        false => None,
+        true => {
+            let stdout = std::io::stdout().into_raw_mode().unwrap();
+            let stdout = AlternateScreen::from(stdout);
+            let backend = TermionBackend::new(stdout);
+            Some(Terminal::new(backend).unwrap())
+        }
+    };
+    if let Some(ref mut term) = term {
+        term.clear().unwrap();
+        term.draw(|f| draw(f, data.clone())).unwrap();
+    }
+
+    let mut redraw;
     loop {
+        redraw = false;
         match rx.recv().await.unwrap() {
             Control::Tick => {
                 let mut ports: Vec<String> = vec![];
@@ -63,6 +153,29 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     config.modified = false;
                 }
             },
+            Control::Round => {
+                for i in data.intf.write().unwrap().values_mut() { i.lag = u16::MAX; }
+                for result in data.results.read().unwrap().iter() {
+                    if result.last.is_none() { continue; }
+                    let last = result.last.unwrap();
+                    if last != 0 { // 0 result means a timeout, don't use it for stats
+                        data.intf.write().unwrap().entry(result.intf.clone())
+                            .and_modify(|mut e| {
+                                if e.min > last { e.min = last; }
+                                if e.lag > last-result.min { e.lag = last-result.min; }
+                            })
+                            .or_insert(IntfStats { min: last, lag: last-result.min });
+                    }
+                }
+                for result in data.results.write().unwrap().iter_mut() {
+                    if let Some(last) = result.last {
+                        result.push_hist(last);
+                        result.last = None;
+                    }
+                    else { result.push_hist(0); }
+                }
+                redraw = true;
+            },
             Control::NewLink(sender, from, to, prio) => {
                 let config = aconfig.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
@@ -74,7 +187,9 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         }
                         if !peers.is_empty() {
                             let text = format!("Node {} joined the network", from);
+                            data.push_log(text.clone());
                             runtime.log.push((unixtime(), text));
+                            redraw = true;
                         }
                         runtime.graph.add_node(from.clone())
                     }
@@ -87,7 +202,9 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         }
                         if !peers.is_empty() {
                             let text = format!("Node {} joined the network", to);
+                            data.push_log(text.clone());
                             runtime.log.push((unixtime(), text));
+                            redraw = true;
                         }
                         runtime.graph.add_node(to.clone())
                     }
@@ -124,8 +241,9 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                                 1 => format!("Node {} left the network", dropped[0]),
                                 n => format!("Netsplit: lost connection to {} nodes ({})", n, dropped.join(", "))
                             };
-                            println!("{}", text);
+                            data.push_log(text.clone());
                             runtime.log.push((unixtime(), text));
+                            redraw = true;
                         }
                         relaymsgs.push((sender, Protocol::Drop { from, to }, true));
                         runtime.msp = calculate_msp(&runtime.graph);
@@ -137,7 +255,9 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     let config = aconfig.read().unwrap();
                     let mut runtime = config.runtime.write().unwrap();
                     let text = format!("Joined the network with {} other nodes", runtime.graph.node_count()-1);
+                    data.push_log(text.clone());
                     runtime.log.push((unixtime(), text));
+                    redraw = true;
                 }
                 peers.insert(name, tx);
             },
@@ -154,8 +274,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     if !dropped.is_empty() { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
                     for node in dropped {
                         let text = format!("Node {} left the network", node);
+                        data.push_log(text.clone());
                         runtime.log.push((unixtime(), text));
                     }
+                    redraw = true;
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
             },
@@ -180,15 +302,49 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     directmsgs.push((to.clone(), Protocol::Scan { from, to }));
                 }
             },
+            Control::Result(node, intf, port, rtt) => {
+                let mut sort = false;
+                let min = {
+                    let mut results = data.results.write().unwrap();
+                    let result = match results.iter_mut().find(|i| i.node == node && i.intf == intf && i.port == port) {
+                        Some(result) => result,
+                        None => {
+                            sort = true;
+                            results.push(PingResult::new(node.clone(), intf.clone(), port.clone()));
+                            results.last_mut().unwrap()
+                        }
+                    };
+                    result.last = Some(rtt);
+                    if rtt < result.min { result.min = rtt; }
+                    result.min
+                };
+                if sort { data.results.write().unwrap().sort(); }
+                let delaycat = match rtt-min {
+                  n if n > THRESHOLD => ((n-THRESHOLD) as f32).sqrt() as u16,
+                  _ => 0
+                };
+                if rtt == 0 {
+                    data.push_ping(format!("Node {:10} {:39} -> {:39} lost", node, intf, port));
+                }
+                else if delaycat == 0 {
+                    data.push_ping(format!("Node {:10} {:39} -> {:39} {:>4}ms", node, intf, port, rtt));
+                }
+                else {
+                    data.push_ping(format!("Node {:10} {:39} -> {:39} {:>4}ms (min {}/dif {}/cat {})", node, intf, port, rtt, min, rtt-min, delaycat));
+                }
+                redraw = true;
+            },
             Control::Update(text) => {
-                println!("{}", text);
+                data.push_log(text.clone());
                 let config = aconfig.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
+                data.push_log(text.clone());
                 runtime.log.push((unixtime(), text));
                 if runtime.log.len() > 25 {
                     let drain = runtime.log.len()-25;
                     runtime.log.drain(0..drain);
                 }
+                redraw = true;
             },
             _ => {
                 panic!("Received unexpected Control message on control task");
@@ -260,6 +416,12 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
             });
         }
+
+        if redraw {
+            if let Some(ref mut term) = term {
+                term.draw(|f| draw(f, data.clone())).unwrap();
+            }
+        }
     }
 }
 
@@ -283,4 +445,99 @@ fn find_next_node(nodes: &[Node], start: usize) -> Option<usize> {
 fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
     // The resulting graph will have all nodes of the input graph with identical indices
     graph::Graph::from_elements(algo::min_spanning_tree(&graph))
+}
+
+fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
+    let vert1 = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50) ].as_ref())
+        .split(f.size());
+    let hori = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(vert1[0]);
+    let vert2 = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(hori[1]);
+
+    let block = Block::default()
+            .title(" Ping results ")
+            .borders(Borders::ALL);
+    let mut content: Vec<ListItem> = vec![];
+    for line in data.ping.read().unwrap().iter().take(hori[0].height.into()) {
+        content.push(ListItem::new(Span::from(line.clone())));
+    }
+    let list = List::new(content).block(block).start_corner(Corner::BottomLeft);
+    f.render_widget(list, hori[0]);
+
+    let block = Block::default()
+            .title(" Network log ")
+            .borders(Borders::ALL);
+    let mut content: Vec<ListItem> = vec![];
+    for line in data.log.read().unwrap().iter().take(vert2[0].height.into()) {
+        content.push(ListItem::new(Span::from(line.clone())));
+    }
+    let list = List::new(content).block(block).start_corner(Corner::BottomLeft);
+    f.render_widget(list, vert2[0]);
+
+    let block = Block::default()
+            .title(" Local interface stats ")
+            .borders(Borders::ALL);
+    let mut content: Vec<Row> = vec![];
+    for (intf, stats) in data.intf.read().unwrap().iter() {
+        content.push(Row::new(vec![ (*intf).clone(), format!("{:^5}", stats.min), format!("{:^5}", stats.lag) ]));
+    }
+    let table = Table::new(content)
+        .block(block)
+        .column_spacing(1)
+        .header(Row::new(vec![ "Interface", "Best", "Lag" ]))
+        .widths(&[Constraint::Length(20), Constraint::Length(5), Constraint::Length(5)]);
+    f.render_widget(table, vert2[1]);
+
+    let block = Block::default()
+        .title(" Results grid ")
+        .borders(Borders::ALL);
+    let mut content: Vec<ListItem> = vec![];
+    for result in data.results.read().unwrap().iter() {
+        let header = format!("{:10} {:39}", result.node, result.port);
+        let mut line = Vec::with_capacity((vert1[1].width-50).into());
+        line.push(Span::from(header));
+        if let Some(rtt) = result.last {
+            line.push(Span::raw(" "));
+            line.push(draw_mark(rtt, result.min));
+        }
+        else { line.push(Span::raw("  ")); }
+        for rtt in result.hist.iter().take((vert1[1].width-50).into()) {
+            line.push(draw_mark(*rtt, result.min));
+        }
+        content.push(ListItem::new(Spans::from(line)));
+    }
+    let list = List::new(content).block(block).start_corner(Corner::TopLeft);
+    f.render_widget(list, vert1[1]);
+}
+
+fn draw_mark(rtt: u16, min: u16) -> Span<'static> {
+    lazy_static!{
+        static ref STYLES: Vec<Style> = vec![
+            // Indexed colors overview: https://jonasjacek.github.io/colors/
+            Style::default().bg(Color::Indexed(46)),
+            Style::default().bg(Color::Indexed(82)),
+            Style::default().bg(Color::Indexed(118)),
+            Style::default().bg(Color::Indexed(154)),
+            Style::default().bg(Color::Indexed(190)),
+            Style::default().bg(Color::Indexed(226)),
+            Style::default().bg(Color::Indexed(220)),
+            Style::default().bg(Color::Indexed(214)),
+            Style::default().bg(Color::Indexed(208)),
+            Style::default().bg(Color::Indexed(202))
+        ];
+    }
+    if rtt == 0 { return Span::styled("!", Style::default().fg(Color::Black).bg(Color::Red)); }
+    let delaycat = match rtt-min {
+      n if n > THRESHOLD => ((n-THRESHOLD) as f32).sqrt() as usize,
+      _ => 0
+    };
+    if delaycat < STYLES.len() { return Span::styled(" ", STYLES[delaycat]); }
+    return Span::styled(" ", *STYLES.last().unwrap());
 }

@@ -59,7 +59,6 @@ struct PingPort {
     minrtt: u16,
     state: PortState,
     hist: VecDeque<u16>,
-    stats: PingStats
 }
 impl PingPort {
     fn from(port: &str, route: Option<String>, usable: bool) -> PingPort {
@@ -90,7 +89,6 @@ impl PingPort {
             minrtt: u16::MAX,
             state: PortState::New,
             hist: VecDeque::with_capacity(HISTSIZE),
-            stats: Default::default()
         }
     }
     fn push_hist(&mut self, result: u16) {
@@ -106,10 +104,6 @@ enum PortState {
     Loss(u8), // Consecutive failures
     Backoff(u8) // Exponential backoff
 }
-#[derive(Default, Debug)]
-struct PingStats {
-    losspct: u8,
-}
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
     let myname;
@@ -120,6 +114,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     let ports;
     let mut nodes: HashMap<String, PingNode> = HashMap::new();
     let mut socks = HashMap::new(); // Maps bound local IP addresses to their sockets
+    let debug;
     {
         let config = config.read().unwrap();
         myname = config.name.clone();
@@ -127,6 +122,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
         namebytes.push(0);
         let runtime = config.runtime.read().unwrap();
         ports = runtime.listen.clone();
+        debug = runtime.debug;
     }
     for port in ports {
         match net::UdpSocket::bind(&port).await {
@@ -153,10 +149,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
         tokio::select!{
             _ = interval.tick() => {
                 let round = (tick%SPREAD as u64) as u8;
+                if round == 0 { ctrltx.send(Control::Round).await.unwrap(); }
                 for (name, node) in nodes.iter_mut() {
                     if node.rescan {
                         node.rescan = false;
-                        println!("Scanning node {} UDP ports", name);
+                        if debug { println!("Scanning node {} UDP ports", name); }
                         for target in node.ports.iter_mut() {
                             let ip: IpAddr = target.ip.parse().unwrap();
                             let mut route = None;
@@ -178,7 +175,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             if let Some(route) = route {
                                 match socks.get(&route) {
                                     Some(sock) => {
-                                        println!("Sending UDP ping to {}:{} via {}", target.ip, target.port, route);
+                                        if debug { println!("Sending UDP ping to {}:{} via {}", target.ip, target.port, route); }
                                         let frame = build_frame(&namebytes, &node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
                                         if let Err(e) = sock.send_to(&frame, (target.ip.as_ref(), target.port)).await {
                                             eprintln!("Failed to send UDP packet to {}:{} via {}: {}", target.ip, target.port, route, e);
@@ -201,12 +198,13 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             for target in node.ports.iter_mut() {
                                 if target.waiting {
                                     target.waiting = false;
-                                    println!("Node {:10} {:39} -> {:39}  timed out", name, target.route, target.ip);
+                                    // println!("Node {:10} {:39} -> {:39}  timed out", name, target.route, target.ip);
+                                    ctrltx.send(Control::Result(name.clone(), target.route.clone(), target.ip.clone(), 0)).await.unwrap();
                                     target.push_hist(0);
                                     match target.state {
                                         PortState::New => { target.state = PortState::Init(0); },
                                         PortState::Init(_) if target.sent > 15 => {
-                                            println!("Node {} intf {} failed to initialize with 15 pings; giving up", name, target.ip);
+                                            if debug { println!("Node {} intf {} failed to initialize with 15 pings; giving up", name, target.ip); }
                                             target.sent = 0;
                                             target.usable = false;
                                         },
@@ -241,9 +239,6 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             if let PortState::Backoff(n) = target.state {
                                 if round%(n^2) != 0 { continue; }
                             }
-                            else if tick%5 == 0 && !std::matches!(target.state, PortState::Init(_)) {
-                                check_stats(&name, target, false);
-                            }
                             let res = socks.get(&target.route);
                             if res.is_none() {
                                 eprintln!("Failed to find local UDP socket {}", target.route);
@@ -259,7 +254,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if !std::matches!(target.state, PortState::Backoff(_)) { target.waiting = true; }
                             }
                         }
-                        if count > 15 { println!("Node {} has {} unusable ports", name, count); }
+                        if count > 15 { eprintln!("Node {} has {} unusable ports", name, count); }
                     }
                 }
                 tick += 1;
@@ -269,7 +264,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                     UdpControl::Frame(name, local, remote, frame) => {
                         let res = nodes.get_mut(&name);
                         if res.is_none() {
-                            println!("Received UDP packet from unknown node {} ({})", name, remote);
+                            if debug { eprintln!("Received UDP packet from unknown node {} ({})", name, remote); }
                             continue;
                         }
                         let node = res.unwrap();
@@ -282,7 +277,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         };
                         let result: Result<Protocol, DecodeError> = rmp_serde::from_read_ref(&frame);
                         if let Err(ref e) = result {
-                            println!("Deserialization error in UDP frame from {}: {:?}", remote, e);
+                            eprintln!("Deserialization error in UDP frame from {}: {:?}", remote, e);
                             continue;
                         }
 
@@ -300,13 +295,13 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let mut port = match res {
                             Some(port) => {
                                 if port.route != route {
-                                    println!("Learned new route {} for node {} port {}", route, name, remote);
+                                    if debug { println!("Learned new route {} for node {} port {}", route, name, remote); }
                                     port.route = route;
                                 }
                                 port
                             },
                             None => {
-                                println!("Learned new port {} for node {} with route {}", remote, name, route);
+                                if debug { println!("Learned new port {} for node {} with route {}", remote, name, route); }
                                 node.ports.push(PingPort::from(&remote.to_string(), Some(route), true));
                                 node.ports.last_mut().unwrap()
                             }
@@ -326,34 +321,25 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                             },
                             Protocol::Pong { value } => {
-                                let mut check = false;
+                                // let mut check = false;
                                 if !port.usable {
                                     port.usable = true;
                                     port.route = sa.ip().to_string();
-                                    println!("Marked {} as pingable via {}", port.ip, port.route);
+                                    if debug { println!("Marked {} as pingable via {}", port.ip, port.route); }
                                 }
-                                let rtt = (epoch.elapsed().as_millis() as u64-value) as u16;
+                                let rtt = match (epoch.elapsed().as_millis() as u64-value) as u16 { 0 => 1, n => n };
                                 if rtt < port.minrtt { port.minrtt = rtt; }
-                                let delaycat = match rtt-port.minrtt {
-                                  n if n > 4 => (n as f32).sqrt() as u16 - 1,
-                                  _ => 0
-                                };
-                                if delaycat == 0 {
-                                    println!("Node {:10} {:39} -> {:39} {:>4}ms", name, sa.ip(), port.ip, rtt);
-                                }
-                                else {
-                                    println!("Node {:10} {:39} -> {:39} {:>4}ms (min {}/dif {}/cat {})", name, sa.ip(), port.ip, rtt, port.minrtt, rtt-port.minrtt, delaycat);
-                                }
                                 if port.waiting { // Probe pings don't have waiting set
                                     port.waiting = false;
-                                    port.push_hist(match rtt { 0 => 1, n => n });
+                                    port.push_hist(rtt);
+                                    ctrltx.send(Control::Result(name.clone(), sa.ip().to_string(), port.ip.clone(), rtt)).await.unwrap();
                                 }
                                 match port.state {
                                     PortState::New => { port.state = PortState::Init(1); },
                                     PortState::Init(n) if n == 5 => {
-                                        println!("Port initialized with minrtt {}", port.minrtt);
+                                        if debug { println!("Port initialized with minrtt {}", port.minrtt); }
                                         port.state = PortState::Ok;
-                                        check = true;
+                                        // check = true;
                                     },
                                     PortState::Init(ref mut n) => { *n += 1; },
                                     PortState::Ok => { },
@@ -368,7 +354,6 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         port.state = PortState::Ok;
                                     }
                                 }
-                                if check { check_stats(&name, &mut port, true); }
                             },
                             p => {
                                 eprintln!("Received unexpected protocol message {:?} from {}", p, remote);
@@ -411,32 +396,20 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     }
 }
 
-fn check_stats(name: &str, port: &mut PingPort, init: bool) {
-    let loss = port.hist.iter().fold(0, |acc, x| if *x == 0 { acc + 1 } else { acc });
-    let losspct: u8 = if loss == 0 { 0 } else { (loss*100/HISTSIZE).try_into().unwrap() };
-    if !init && losspct > port.stats.losspct {
-        println!("Node {} port {} packet loss increased to {}%", name, port.label, losspct);
-    }
-    else if !init && losspct < port.stats.losspct {
-        println!("Node {} port {} packet loss decreased to {}%", name, port.label, losspct);
-    }
-    port.stats.losspct = losspct;
-}
-
 async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::Sender<UdpControl>) {
     let mut buf = [0; 1500];
     loop {
         match sock.recv_from(&mut buf).await {
             Ok((len, addr)) => {
                 // println!("Received {} bytes on {} from {}", len, port, addr);
-                if len < 2 { println!("Short UDP message from {}", addr); continue; }
+                if len < 2 { eprintln!("Short UDP message from {}", addr); continue; }
                 let framelen = (buf[1] as usize) << 8 | buf[0] as usize; // len is little-endian
-                if len < framelen+2 { println!("Short UDP message from {}", addr); continue; }
+                if len < framelen+2 { eprintln!("Short UDP message from {}", addr); continue; }
                 let res = buf.iter().skip(2).position(|x| *x == 0); // name is null-terminated
-                if res.is_none() { println!("Invalid UDP message from {}", addr); continue; }
+                if res.is_none() { eprintln!("Invalid UDP message from {}", addr); continue; }
                 let (namebytes, payload) = buf[2..framelen+2].split_at(res.unwrap());
                 let name = String::from_utf8(namebytes.to_vec());
-                if name.is_err() { println!("Invalid name in UDP message from {}", addr); continue; }
+                if name.is_err() { eprintln!("Invalid name in UDP message from {}", addr); continue; }
                 let mut frame = Vec::new();
                 frame.extend_from_slice(&payload[1..]);
                 if let Err(e) = readtx.send(UdpControl::Frame(name.unwrap(), port.clone(), addr, frame)).await {
@@ -444,7 +417,7 @@ async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::
                 }
             },
             Err(e) => {
-                println!("UDP error: {}", e);
+                eprintln!("UDP error: {}", e);
             }
         }
     }

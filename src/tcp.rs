@@ -19,6 +19,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         let config = config.read().unwrap();
         config.name.clone()
     };
+    let debug = config.read().unwrap().runtime.read().unwrap().debug;
     let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10); // Collects frames to send to our peer
     let mut control: Vec<Control> = Vec::with_capacity(10); // Collects Control msgs to send to the control task
     let mut links: Vec<(String, String, u8)> = Vec::with_capacity(10);
@@ -28,7 +29,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
             _ = interval.tick() => {
                 let idle = conn.lastdata.elapsed().as_secs();
                 if idle > 89 {
-                    eprintln!("Connection with {} lost", conn.nodename);
+                    if debug { println!("Connection with {} lost", conn.nodename); }
                     break;
                 }
                 if idle > 59 {
@@ -53,11 +54,11 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                 let n = match res {
                     Ok(n) if n > 0 => n,
                     Ok(_) => {
-                        println!("Connection with {} closed", conn.nodename);
+                        if debug { println!("Connection with {} closed", conn.nodename); }
                         break;
                     },
                     Err(_) => {
-                        println!("Read error on connection with {}", conn.nodename);
+                        if debug { println!("Read error on connection with {}", conn.nodename); }
                         break;
                     }
                 };
@@ -85,12 +86,14 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     }
                     let result: Result<Protocol, DecodeError> = rmp_serde::from_read_ref(&frame);
                     if let Err(ref e) = result {
-                        println!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename);
+                        if debug { eprintln!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename); }
                         break 'select;
                     }
                     let proto = result.unwrap();
-                    if let Protocol::Check { .. } = proto { } // Don't log Check frames
-                    else { println!("Received {:?} from {}", proto, conn.nodename); }
+                    if debug {
+                        if let Protocol::Check { .. } = proto { } // Don't log Check frames
+                        else { println!("Received {:?} from {}", proto, conn.nodename); }
+                    }
                     match proto {
                         Protocol::Intro { version, name, pubkey } => {
                             if version != 1 {
@@ -138,7 +141,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
 
                             if active {
-                                println!("Switching to a secure line...");
+                                if debug { println!("Switching to a secure line..."); }
                                 frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
                             }
                             else {
@@ -163,7 +166,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 
                             let dur = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
                             let days = (dur.as_secs() - boottime)/86400;
-                            println!("Connection with {} authenticated; host up for {} days running {}", conn.nodename, days, osversion);
+                            if debug { println!("Connection with {} authenticated; host up for {} days running {}", conn.nodename, days, osversion); }
                         },
                         Protocol::Ports { node, ports } => {
                             if conn.state < ConnState::Encrypted {
@@ -180,7 +183,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                             frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
                                         }
                                     }
-                                    else { println!("Not sending links to already-connected node {}", conn.nodename); }
+                                    else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
                                     frames.push(build_frame(&sbox, Protocol::Sync { weight: conn.prio }));
                                 }
                                 else {
@@ -201,7 +204,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                         frames.push(build_frame(&sbox, Protocol::Ports { node: name, ports: node.listen.clone() }));
                                     },
                                     None => {
-                                        println!("Received Node request for unknown node {}", name);
+                                        eprintln!("Received Node request for unknown node {}", name);
                                     }
                                 }
                             }
@@ -210,11 +213,11 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 match config.nodes.iter().find(|node| node.name == name) {
                                     Some(node) => {
                                         if node.pubkey != pubkey {
-                                            println!("Received Node message for {} with changed public key", name);
+                                            eprintln!("Received Node message for {} with changed public key", name);
                                         }
                                     },
                                     None => {
-                                        println!("Learned public key for node {}", name);
+                                        if debug { println!("Learned public key for node {}", name); }
                                         config.nodes.push(Node { name, pubkey, .. Default::default() });
                                         config.modified = true;
                                     }
@@ -253,7 +256,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                         frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
                                     }
                                 }
-                                else { println!("Not sending links to already-connected node {}", conn.nodename); }
+                                else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
                                 frames.push(build_frame(&sbox, Protocol::Sync { weight }));
                             }
                             if active { control.push(Control::NewLink(conn.nodename.clone(), myname.clone(), conn.nodename.clone(), weight)); }
@@ -263,7 +266,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                             control.push(Control::NewPeer(conn.nodename.clone(), tx.clone()));
                             conn.state = ConnState::Synchronized;
-                            println!("Synchronized with {}", conn.nodename);
+                            if debug { println!("Synchronized with {}", conn.nodename); }
                         },
                         Protocol::Drop { from, to } => {
                             control.push(Control::DropLink(conn.nodename.clone(), from, to));
@@ -291,7 +294,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         }
                     }
                     Err(_) => {
-                        println!("Write timeout to {}", conn.nodename);
+                        eprintln!("Write timeout to {}", conn.nodename);
                         break;
                     }
                 }
@@ -314,13 +317,14 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 }
 
 pub async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>, learn: bool) {
+    let debug = config.read().unwrap().runtime.read().unwrap().debug;
     for addr in ports {
-        println!("Connecting to {}", addr);
+        if debug { println!("Connecting to {}", addr); }
         match timeout(Duration::from_secs(5), net::TcpStream::connect(&addr)).await {
             Ok(res) => {
                 match res {
                     Ok(mut stream) => {
-                        println!("Connected to {}", addr);
+                        if debug { println!("Connected to {}", addr); }
                         let frame = build_frame(&None, Protocol::new_intro(&config));
                         if timeout(Duration::from_secs(10), stream.write_all(&frame)).await.is_err() { continue; }
                         let config = config.clone();
@@ -330,10 +334,10 @@ pub async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Send
                         });
                         return;
                     },
-                    Err(e) => println!("Error connecting to {}: {}", addr, e)
+                    Err(e) => { if debug { println!("Error connecting to {}: {}", addr, e); } }
                 }
             },
-            Err(_) => println!("Timeout connecting to {}", addr)
+            Err(_) => { if debug { println!("Timeout connecting to {}", addr); } }
         }
     }
 }

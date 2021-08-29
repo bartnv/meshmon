@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
+// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{ aead::Aead, PublicKey, SecretKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
 use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
@@ -91,6 +91,8 @@ struct Runtime {
     graph: UnGraph<String, u8>,
     msp: UnGraph<String, u8>,
     acceptnewnodes: bool,
+    tui: bool,
+    debug: bool,
     log: Vec<(u64, String)> // Unix timestamp, log message
 }
 
@@ -125,6 +127,7 @@ enum ConnState {
 #[derive(Debug)]
 pub enum Control {
     Tick,
+    Round,
     NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for control messages to the TCP task)
     DropPeer(String), // Node name
     NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
@@ -134,6 +137,7 @@ pub enum Control {
     Send(Protocol), // Protocol message to send
     Scan(String, String), // From node, to node
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
+    Result(String, String, String, u16), // Node name, interface address, port, rtt
     Update(String), // Status update
 }
 
@@ -161,11 +165,11 @@ impl Protocol {
         let runtime = config.runtime.read().unwrap();
         let sysinfo = runtime.sysinfo.as_ref().unwrap();
         let osversion = format!("{} {} ({})",
-            sysinfo.get_name().unwrap_or_else(|| "<unknown>".to_owned()),
-            sysinfo.get_os_version().unwrap_or_else(|| "<unknown>".to_owned()),
-            sysinfo.get_kernel_version().unwrap_or_else(|| "<unknown>".to_owned())
+            sysinfo.name().unwrap_or_else(|| "<unknown>".to_owned()),
+            sysinfo.os_version().unwrap_or_else(|| "<unknown>".to_owned()),
+            sysinfo.kernel_version().unwrap_or_else(|| "<unknown>".to_owned())
         );
-        Protocol::Crypt { boottime: sysinfo.get_boot_time(), osversion }
+        Protocol::Crypt { boottime: sysinfo.boot_time(), osversion }
     }
 }
 
@@ -188,6 +192,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .multiple(true).takes_value(true).number_of_values(1)
             )
             .arg(Arg::with_name("http").short("h").long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
+            .arg(Arg::with_name("tui").short("t").long("tui").help("Activate the interactive terminal user-interface"))
+            .arg(Arg::with_name("debug").long("debug").help("Verbose logging").conflicts_with("tui"))
         );
     let args = app.get_matches();
     let config: Arc<RwLock<Config>>;
@@ -231,6 +237,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.privkey = Some(rawkey.into());
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key());
         runtime.acceptnewnodes = args.is_present("acceptnewnodes");
+        runtime.tui = args.is_present("tui");
+        runtime.debug = args.is_present("debug");
         runtime.sysinfo = Some(sysinfo::System::new_all());
         runtime.sysinfo.as_mut().unwrap().refresh_all();
         runtime.graph.add_node(config.name.clone());
@@ -264,11 +272,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let listener = net::TcpListener::bind(port).await?;
         println!("Started TCP listener on {}", port);
         tokio::spawn(async move {
+            let debug = config.read().unwrap().runtime.read().unwrap().debug;
             loop {
                 if let Ok((socket, _)) = listener.accept().await {
                     let ctrltx = ctrltx.clone();
                     let config = config.clone();
-                    println!("Incoming connection from {} to {}", socket.peer_addr().unwrap(), socket.local_addr().unwrap());
+                    if debug { println!("Incoming connection from {} to {}", socket.peer_addr().unwrap(), socket.local_addr().unwrap()); }
                     tokio::spawn(async move {
                         tcp::run(config, socket, ctrltx, false, learn).await;
                     });
