@@ -315,7 +315,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         }
                     };
                     result.last = Some(rtt);
-                    if rtt < result.min { result.min = rtt; }
+                    if rtt > 0 && rtt < result.min { result.min = rtt; }
                     result.min
                 };
                 if sort { data.results.write().unwrap().sort(); }
@@ -499,17 +499,24 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
         .title(" Results grid ")
         .borders(Borders::ALL);
     let mut content: Vec<ListItem> = vec![];
+    let mut prev = String::new();
+    let mut mark;
     for result in data.results.read().unwrap().iter() {
+        if prev != result.node {
+            prev = result.node.clone();
+            mark = "▔";
+        }
+        else { mark = " "; }
         let header = format!("{:10} {:39}", result.node, result.port);
         let mut line = Vec::with_capacity((vert1[1].width-50).into());
         line.push(Span::from(header));
         if let Some(rtt) = result.last {
             line.push(Span::raw(" "));
-            line.push(draw_mark(rtt, result.min));
+            line.push(draw_mark(rtt, result.min, mark));
         }
         else { line.push(Span::raw("  ")); }
         for rtt in result.hist.iter().take((vert1[1].width-50).into()) {
-            line.push(draw_mark(*rtt, result.min));
+            line.push(draw_mark(*rtt, result.min, mark));
         }
         content.push(ListItem::new(Spans::from(line)));
     }
@@ -517,27 +524,27 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
     f.render_widget(list, vert1[1]);
 }
 
-fn draw_mark(rtt: u16, min: u16) -> Span<'static> {
+fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
     lazy_static!{
         static ref STYLES: Vec<Style> = vec![
             // Indexed colors overview: https://jonasjacek.github.io/colors/
-            Style::default().bg(Color::Indexed(46)),
-            Style::default().bg(Color::Indexed(82)),
-            Style::default().bg(Color::Indexed(118)),
-            Style::default().bg(Color::Indexed(154)),
-            Style::default().bg(Color::Indexed(190)),
-            Style::default().bg(Color::Indexed(226)),
-            Style::default().bg(Color::Indexed(220)),
-            Style::default().bg(Color::Indexed(214)),
-            Style::default().bg(Color::Indexed(208)),
-            Style::default().bg(Color::Indexed(202))
+            Style::default().fg(Color::Black).bg(Color::Indexed(46)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(82)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(118)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(154)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(190)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(226)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(220)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(214)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(208)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(202))
         ];
     }
-    if rtt == 0 { return Span::styled("!", Style::default().fg(Color::Black).bg(Color::Red)); }
+    if rtt == 0 { return Span::styled("-", Style::default().fg(Color::Black).bg(Color::Indexed(196))); }
     let delaycat = match rtt-min {
       n if n > THRESHOLD => ((n-THRESHOLD) as f32).sqrt() as usize,
       _ => 0
     };
-    if delaycat < STYLES.len() { return Span::styled(" ", STYLES[delaycat]); }
-    return Span::styled(" ", *STYLES.last().unwrap());
+    if delaycat < STYLES.len() { return Span::styled(mark, STYLES[delaycat]); }
+    return Span::styled("^", (*STYLES.last().unwrap()).fg(Color::Black));
 }
