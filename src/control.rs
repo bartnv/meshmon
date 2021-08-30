@@ -319,18 +319,14 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     result.min
                 };
                 if sort { data.results.write().unwrap().sort(); }
-                let delaycat = match rtt-min {
-                  n if n > THRESHOLD => ((n-THRESHOLD) as f32).sqrt() as u16,
-                  _ => 0
-                };
                 if rtt == 0 {
                     data.push_ping(format!("Node {:10} {:39} -> {:39} lost", node, intf, port));
                 }
-                else if delaycat == 0 {
-                    data.push_ping(format!("Node {:10} {:39} -> {:39} {:>4}ms", node, intf, port, rtt));
-                }
                 else {
-                    data.push_ping(format!("Node {:10} {:39} -> {:39} {:>4}ms (min {}/dif {}/cat {})", node, intf, port, rtt, min, rtt-min, delaycat));
+                    data.push_ping(match rtt-min {
+                      n if n > THRESHOLD => format!("Node {:10} {:39} -> {:39} {:>4}ms (min {}/dif {}/cat {})", node, intf, port, rtt, min, rtt-min, ((n-THRESHOLD) as f32).sqrt() as u16),
+                      _ => format!("Node {:10} {:39} -> {:39} {:>4}ms", node, intf, port, rtt)
+                    });
                 }
                 redraw = true;
             },
