@@ -533,10 +533,11 @@ fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
             Style::default().fg(Color::Black).bg(Color::Indexed(220)),
             Style::default().fg(Color::Black).bg(Color::Indexed(214)),
             Style::default().fg(Color::Black).bg(Color::Indexed(208)),
-            Style::default().fg(Color::Black).bg(Color::Indexed(202))
+            Style::default().fg(Color::Black).bg(Color::Indexed(202)),
+            Style::default().fg(Color::Black).bg(Color::Indexed(196))
         ];
     }
-    if rtt == 0 { return Span::styled("-", Style::default().fg(Color::Black).bg(Color::Indexed(196))); }
+    if rtt == 0 { return Span::styled("•", Style::default().fg(Color::Black).bg(Color::Indexed(196))); }
     let delaycat = match rtt-min {
       n if n > THRESHOLD => ((n-THRESHOLD) as f32).sqrt() as usize,
       _ => 0
