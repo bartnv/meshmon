@@ -78,9 +78,10 @@ struct IntfStats {
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>) {
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
-    let myname = {
+    let (myname, debug) = {
         let config = aconfig.read().unwrap();
-        config.name.clone()
+        let runtime = config.runtime.read().unwrap();
+        (config.name.clone(), runtime.debug)
     };
     let mut nodeidx = usize::MAX-1;
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
@@ -363,11 +364,11 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         if runtime.msp[peer] == from { continue; }
                         match peers.get(&runtime.msp[peer]) {
                             Some(tx) => {
-                                println!("Relaying {:?} to {}", proto, runtime.msp[peer]);
+                                if debug { println!("Relaying {:?} to {}", proto, runtime.msp[peer]); }
                                 targets.push((tx.clone(), Control::Send(proto.clone())));
                             },
                             None => {
-                                println!("Peer {} not found", runtime.msp[peer]);
+                                eprintln!("Peer {} not found", runtime.msp[peer]);
                             }
                         }
                     }
@@ -503,14 +504,13 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
             mark = "▔";
         }
         else { mark = " "; }
-        let header = format!("{:10} {:39}", result.node, result.port);
+        let header = format!("{:10} {:39} ", result.node, result.port);
         let mut line = Vec::with_capacity((vert1[1].width-50).into());
         line.push(Span::from(header));
         if let Some(rtt) = result.last {
-            line.push(Span::raw(" "));
             line.push(draw_mark(rtt, result.min, mark));
         }
-        else { line.push(Span::raw("  ")); }
+        else { line.push(Span::raw(" ")); }
         for rtt in result.hist.iter().take((vert1[1].width-50).into()) {
             line.push(draw_mark(*rtt, result.min, mark));
         }

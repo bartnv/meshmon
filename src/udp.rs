@@ -106,24 +106,18 @@ enum PortState {
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
-    let myname;
-    let mut namebytes;
     let epoch = Instant::now();
     let (readtx, mut readrx) = sync::mpsc::channel(10);
     let mut cohort = (0..SPREAD).cycle();
-    let ports;
     let mut nodes: HashMap<String, PingNode> = HashMap::new();
     let mut socks = HashMap::new(); // Maps bound local IP addresses to their sockets
-    let debug;
-    {
+    let (myname, namebytes, ports, debug) = {
         let config = config.read().unwrap();
-        myname = config.name.clone();
-        namebytes = config.name.clone().into_bytes();
-        namebytes.push(0);
         let runtime = config.runtime.read().unwrap();
-        ports = runtime.listen.clone();
-        debug = runtime.debug;
-    }
+        let mut namebytes = config.name.clone().into_bytes();
+        namebytes.push(0);
+        (config.name.clone(), namebytes, runtime.listen.clone(), runtime.debug)
+    };
     for port in ports {
         match net::UdpSocket::bind(&port).await {
             Ok(sock) => {
@@ -196,9 +190,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                     else {
                         if round == node.cohort+1 || (round == 0 && node.cohort == SPREAD-1) {
                             for target in node.ports.iter_mut() {
-                                if target.waiting {
+                                if target.waiting { // No response seen from previous round
                                     target.waiting = false;
-                                    // println!("Node {:10} {:39} -> {:39}  timed out", name, target.route, target.ip);
                                     ctrltx.send(Control::Result(name.clone(), target.route.clone(), target.ip.clone(), 0)).await.unwrap();
                                     target.push_hist(0);
                                     match target.state {
