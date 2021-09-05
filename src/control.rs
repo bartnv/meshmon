@@ -329,6 +329,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                       _ => format!("Node {:10} {:39} -> {:39} {:>4}ms", node, intf, port, rtt)
                     });
                 }
+                if debug { println!("{}", data.ping.read().unwrap().front().unwrap()); }
                 redraw = true;
             },
             Control::Update(text) => {
