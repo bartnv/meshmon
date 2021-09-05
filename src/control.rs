@@ -173,7 +173,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         result.push_hist(last);
                         result.last = None;
                     }
-                    else { result.push_hist(0); }
+                    else { result.push_hist(u16::MAX); }
                 }
                 redraw = true;
             },
@@ -539,6 +539,7 @@ fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
         ];
     }
     if rtt == 0 { return Span::styled("•", Style::default().fg(Color::Black).bg(Color::Indexed(196))); }
+    if rtt == u16::MAX { return Span::raw(" "); }
     let delaycat = match rtt-min {
       n if n > THRESHOLD => ((n-THRESHOLD) as f32).sqrt() as usize,
       _ => 0
