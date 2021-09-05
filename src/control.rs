@@ -272,11 +272,18 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         relaymsgs.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
                     }
                     let dropped = runtime.graph.drop_detached_nodes();
-                    if !dropped.is_empty() { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
-                    for node in dropped {
-                        let text = format!("Node {} left the network", node);
+                    // if !dropped.is_empty() { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
+                    if peers.is_empty() {
+                        let text = format!("Disconnected from the network; lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" });
                         data.push_log(text.clone());
                         runtime.log.push((unixtime(), text));
+                    }
+                    else {
+                        for node in dropped {
+                            let text = format!("Node {} left the network", node);
+                            data.push_log(text.clone());
+                            runtime.log.push((unixtime(), text));
+                        }
                     }
                     redraw = true;
                 }
