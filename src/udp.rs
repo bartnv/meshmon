@@ -218,8 +218,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let mut count = 0;
                         for target in node.ports.iter_mut() {
                             if !target.usable { count += 1; continue; }
-                            if let PortState::Backoff(n) = target.state {
-                                if round%(n^2) != 0 { continue; }
+                            if let PortState::Backoff(ref mut n) = target.state {
+                                if *n & (*n-1) != 0 { // Only ping every power-of-two rounds
+                                    *n += 1;
+                                    continue;
+                                }
                             }
                             let res = socks.get(&target.route);
                             if res.is_none() {
@@ -233,7 +236,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             }
                             else {
                                 target.sent += 1;
-                                if !std::matches!(target.state, PortState::Backoff(_)) { target.waiting = true; }
+                                target.waiting = true;
                             }
                         }
                         if count > 15 { eprintln!("Node {} has {} unusable ports", name, count); }
