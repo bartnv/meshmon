@@ -220,7 +220,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             if !target.usable { count += 1; continue; }
                             if let PortState::Backoff(ref mut n) = target.state {
                                 if *n & (*n-1) != 0 { // Only ping every power-of-two rounds
-                                    *n += 1;
+                                    if *n == 255 { *n = 128; }
+                                    else { *n += 1; }
                                     continue;
                                 }
                             }
