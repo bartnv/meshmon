@@ -181,7 +181,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             for target in node.ports.iter_mut() {
                                 if target.waiting { // No response seen from previous round
                                     target.waiting = false;
-                                    if target.state > PortState::Init(15) { ctrltx.send(Control::Result(name.clone(), target.route.clone(), target.ip.clone(), 0)).await.unwrap(); }
+                                    if target.state > PortState::Init(0) { ctrltx.send(Control::Result(name.clone(), target.route.clone(), target.ip.clone(), 0)).await.unwrap(); }
                                     target.push_hist(0);
                                     match target.state {
                                         PortState::New => { target.state = PortState::Init(0); },
@@ -357,7 +357,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 pingnode.notify = !external;
                                 for port in &node.listen {
                                     if pingnode.has_port(port) { continue; }
-                                    pingnode.ports.push(PingPort::from(&port, None, false));
+                                    pingnode.ports.push(PingPort::from(port, None, false));
                                 }
                             },
                             None => {
@@ -423,7 +423,7 @@ fn isprivate(ip: std::net::IpAddr) -> bool {
 fn build_frame(name: &[u8], sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
     // println!("Sending {:?}", proto);
     let payload = match sbox {
-        Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
+        Some(sbox) => encrypt_frame(sbox, &rmp_serde::to_vec(&proto).unwrap()),
         None => rmp_serde::to_vec(&proto).unwrap()
     };
     let mut frame: Vec<u8> = Vec::new();

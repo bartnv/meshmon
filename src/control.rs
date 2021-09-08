@@ -20,7 +20,7 @@ struct PingResult {
 }
 impl PingResult {
     fn new(node: String, intf: String, port: String) -> PingResult {
-        return PingResult { node, intf, port, min: u16::MAX, last: None, hist: VecDeque::with_capacity(HISTSIZE) };
+        PingResult { node, intf, port, min: u16::MAX, last: None, hist: VecDeque::with_capacity(HISTSIZE) }
     }
     fn push_hist(&mut self, result: u16) {
         if self.hist.len() >= HISTSIZE { self.hist.pop_back().unwrap(); }

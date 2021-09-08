@@ -137,7 +137,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 conn.pubkey = Some(PublicKey::from(keybytes));
                                 conn.prio = node.prio;
 
-                                sbox = Some(SalsaBox::new(&conn.pubkey.as_ref().unwrap(), &config.runtime.read().unwrap().privkey.as_ref().unwrap()));
+                                sbox = Some(SalsaBox::new(conn.pubkey.as_ref().unwrap(), config.runtime.read().unwrap().privkey.as_ref().unwrap()));
                             }
 
                             if active {
@@ -230,10 +230,10 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 return;
                             }
                             let config = config.read().unwrap();
-                            if from != myname && config.nodes.iter().find(|node| node.name == from).is_none() {
+                            if from != myname && !config.nodes.iter().any(|node| node.name == from) {
                                 frames.push(build_frame(&sbox, Protocol::Node{ name: from.clone(), pubkey: String::new() }));
                             }
-                            if to != myname && config.nodes.iter().find(|node| node.name == to).is_none() {
+                            if to != myname && !config.nodes.iter().any(|node| node.name == to) {
                                 frames.push(build_frame(&sbox, Protocol::Node{ name: to.clone(), pubkey: String::new() }));
                             }
                             if conn.state == ConnState::Encrypted { // Buffer links received before Sync
@@ -286,7 +286,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         } // End of select! macro
         if !frames.is_empty() {
             for frame in &frames {
-                match timeout(Duration::from_secs(10), socket.write_all(&frame)).await {
+                match timeout(Duration::from_secs(10), socket.write_all(frame)).await {
                     Ok(res) => {
                         if res.is_err() {
                             eprintln!("Write error to {}", conn.nodename);
@@ -345,7 +345,7 @@ pub async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Send
 fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
     // println!("Sending {:?}", proto);
     let payload = match sbox {
-        Some(sbox) => encrypt_frame(&sbox, &rmp_serde::to_vec(&proto).unwrap()),
+        Some(sbox) => encrypt_frame(sbox, &rmp_serde::to_vec(&proto).unwrap()),
         None => rmp_serde::to_vec(&proto).unwrap()
     };
     let mut frame: Vec<u8> = Vec::new();
