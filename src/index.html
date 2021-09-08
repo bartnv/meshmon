@@ -10,9 +10,19 @@
       {
         layout: { randomSeed: '0.4362377321956592:1623528045167' },
         nodes: { shape: "dot", size: 16 },
-        edges: { smooth: { type: "continuous", forceDirection: "none", roundness: 0 } }
+        edges: { smooth: { type: "continuous", forceDirection: "none", roundness: 0 }, physics: false }
       }
     );
+    let radius = 250;
+    graph.on('initRedraw', function () {
+      let ids = window.nodes.getIds()
+      let d = 2 * Math.PI / ids.length // Angular pitch
+      ids.forEach(function(id, i) {
+        let x = radius * Math.cos(d * i);
+        let y = radius * Math.sin(d * i);
+        graph.moveNode(id, x, y);
+      })
+    });
     window.lastupdate = 0;
     getGraph();
     setInterval(getGraph, 15000);
@@ -21,8 +31,8 @@
     jQuery.post('/rpc', { req: 'update', since: lastupdate }, renderGraph, 'json');
   }
   function renderGraph(data) {
-    let nodes = new vis.DataSet(data.nodes);
-    let edges = new vis.DataSet(data.edges);
+    window.nodes = new vis.DataSet(data.nodes);
+    window.edges = new vis.DataSet(data.edges);
     graph.setData({ nodes: nodes, edges: edges });
     for (let entry of data.log) {
       let ts = parseInt(entry[0]);
