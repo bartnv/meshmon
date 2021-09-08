@@ -22,6 +22,8 @@ pub trait GraphExt {
     fn drop_detached_nodes(&mut self) -> Vec<String>;
     fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool;
     fn print(&self);
+    fn find_weakly_connected_node(&self) -> Option<String>;
+    fn weakly_connected_dfs(&self, v: graph::NodeIndex, visited: &mut Vec<graph::NodeIndex>, tin: &mut HashMap<graph::NodeIndex, i8>, low: &mut HashMap<graph::NodeIndex, i8>, timer: &mut i8, parent: Option<graph::NodeIndex>) -> Option<String>;
 }
 impl GraphExt for UnGraph<String, u8> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
@@ -54,6 +56,50 @@ impl GraphExt for UnGraph<String, u8> {
         for edge in self.raw_edges().iter() {
             println!("Edge: {} -> {} ({})", self[edge.source()], self[edge.target()], edge.weight);
         }
+    }
+    fn find_weakly_connected_node(&self) -> Option<String> {
+        let mut timer: i8 = 0;
+        let mut visited: Vec<graph::NodeIndex> = Vec::new();
+        let mut tin: HashMap<graph::NodeIndex, i8> = HashMap::new();
+        let mut low: HashMap<graph::NodeIndex, i8> = HashMap::new();
+
+        self.weakly_connected_dfs(graph::NodeIndex::new(0), &mut visited, &mut tin, &mut low, &mut timer, None)
+        // for v in self.node_indices() { // Loop only needed for disconnected graphs
+        //     if !visited.contains(&v) {
+        //         self.dfs(v, &mut visited, &mut tin, &mut low, &mut timer, None);
+        //     }
+        // }
+    }
+    fn weakly_connected_dfs(&self, v: graph::NodeIndex, visited: &mut Vec<graph::NodeIndex>, tin: &mut HashMap<graph::NodeIndex, i8>, low: &mut HashMap<graph::NodeIndex, i8>, timer: &mut i8, parent: Option<graph::NodeIndex>) -> Option<String> {
+        visited.push(v);
+        *timer += 1;
+        tin.insert(v, *timer);
+        low.insert(v, *timer);
+        // let mut children = 0;
+        for to in self.neighbors(v) {
+            if Some(to) == parent { continue; }
+            if visited.contains(&to) {
+                let atin = match tin.get(&to) { Some(i) => *i, None => -1 };
+                let alow = *(low.get(&v).unwrap());
+                low.insert(v, match alow < atin { true => alow, false => atin });
+            }
+            else {
+                if let Some(name) = self.weakly_connected_dfs(to, visited, tin, low, timer, Some(v)) {
+                    return Some(name);
+                }
+                let vlow = *(low.get(&v).unwrap());
+                let tolow = match low.get(&to) { Some(i) => *i, None => -1 };
+                low.insert(v, match vlow < tolow { true => vlow, false => tolow });
+                if low.get(&to).unwrap() >= tin.get(&v).unwrap() && parent.is_some() && self.neighbors(v).count() > 1 {
+                    return Some(self[to].clone());
+                }
+                // children += 1;
+            }
+        }
+        None
+        // if !parent.is_some() && children > 1 && self.neighbors(v).count() > 1 {
+        //     println!("Node {} is a cut vertex", self[v]);
+        // }
     }
 }
 

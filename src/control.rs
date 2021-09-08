@@ -104,10 +104,12 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     }
 
     let mut redraw;
+    let mut ticks: u32 = 0;
     loop {
         redraw = false;
         match rx.recv().await.unwrap() {
             Control::Tick => {
+                ticks += 1;
                 let mut ports: Vec<String> = vec![];
                 let config = aconfig.read().unwrap();
                 let count = config.nodes.iter().filter(|i| i.connected).count();
@@ -122,15 +124,32 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     if ports.is_empty() {
                         println!("Number of peers ({}) is below target number ({}), but I have no more available nodes", count, config.targetpeers);
                     }
-                    else {
-                        let config = aconfig.clone();
-                        let ctrltx = ctrltx.clone();
-                        tokio::spawn(async move {
-                            crate::tcp::connect_node(config, ctrltx, ports, false).await;
-                        });
+                    else if debug { println!("Selected node {} for uplink connection", config.nodes.get(nodeidx).unwrap().name); }
+                }
+                else {
+                    nodeidx = usize::MAX-1; // Reset node index for regular connections
+                    if ticks%15 == 0 { // Only check for weak connections once every 15 minutes
+                        let runtime = config.runtime.read().unwrap();
+                        if runtime.graph.node_count() > 4 {
+                            if let Some(name) = runtime.graph.find_weakly_connected_node() {
+                                if let Some(node) = config.nodes.iter().find(|i| i.name == name) {
+                                    if debug { println!("Connecting to node {} to fix weak connection in network", name); }
+                                    for addr in &node.listen {
+                                        ports.push(addr.clone());
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-                else { nodeidx = usize::MAX-1; }
+
+                if !ports.is_empty() {
+                    let config = aconfig.clone();
+                    let ctrltx = ctrltx.clone();
+                    tokio::spawn(async move {
+                        crate::tcp::connect_node(config, ctrltx, ports, false).await;
+                    });
+                }
 
                 if let Some(file) = &config.dotfile {
                     let runtime = config.runtime.read().unwrap();
