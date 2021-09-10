@@ -19,8 +19,8 @@ static INDEX_FILE: &str = include_str!("index.html");
 
 pub trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
+    fn has_node(&self, name: &str) -> bool;
     fn drop_detached_nodes(&mut self) -> Vec<String>;
-    fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool;
     fn print(&self);
     fn find_weakly_connected_node(&self) -> Option<String>;
     fn weakly_connected_dfs(&self, v: graph::NodeIndex, visited: &mut Vec<graph::NodeIndex>, tin: &mut HashMap<graph::NodeIndex, i8>, low: &mut HashMap<graph::NodeIndex, i8>, timer: &mut i8, parent: Option<graph::NodeIndex>) -> Option<String>;
@@ -28,6 +28,9 @@ pub trait GraphExt {
 impl GraphExt for UnGraph<String, u8> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
         self.node_indices().find(|i| self[*i] == name)
+    }
+    fn has_node(&self, name: &str) -> bool {
+        self.node_indices().any(|i| self[i] == name)
     }
     fn drop_detached_nodes(&mut self) -> Vec<String> {
         let mynode = graph::NodeIndex::new(0);
@@ -45,12 +48,6 @@ impl GraphExt for UnGraph<String, u8> {
         }
         if !retain.is_empty() { self.retain_nodes(|_, nodeidx| retain.contains(&nodeidx)); }
         dropped
-    }
-    fn has_path(&self, from: graph::NodeIndex, to: &str) -> bool {
-        match self.find_node(to) {
-            None => false,
-            Some(node) => petgraph::algo::has_path_connecting(self, from, node, None)
-        }
     }
     fn print(&self) {
         for edge in self.raw_edges().iter() {
