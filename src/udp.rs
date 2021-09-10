@@ -293,7 +293,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
                                     eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
                                 }
-                                if !port.usable {
+                                if !port.usable || port.state > PortState::Loss(0) {
                                     let frame = build_frame(&namebytes, &node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
                                     if let Err(e) = sock.send_to(&frame, &remote).await {
                                         eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
@@ -303,7 +303,6 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             Protocol::Pong { value } => {
                                 if !port.usable {
                                     port.usable = true;
-                                    port.route = sa.ip().to_string();
                                     if debug { println!("Marked {} as pingable via {}", port.ip, port.route); }
                                 }
                                 let rtt = match (epoch.elapsed().as_millis() as u64-value) as u16 { 0 => 1, n => n };
