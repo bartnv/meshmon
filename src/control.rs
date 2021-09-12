@@ -71,6 +71,7 @@ impl Data {
     }
 }
 struct IntfStats {
+    symbol: char,
     min: u16,
     lag: u16
 }
@@ -102,6 +103,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         term.clear().unwrap();
         term.draw(|f| draw(f, data.clone())).unwrap();
     }
+    let mut lastsymbol = 64;
 
     let mut redraw;
     let mut ticks: u32 = 0;
@@ -184,7 +186,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                                 if e.min > last { e.min = last; }
                                 if e.lag > last-result.min { e.lag = last-result.min; }
                             })
-                            .or_insert(IntfStats { min: last, lag: last-result.min });
+                            .or_insert({
+                                lastsymbol += 1;
+                                IntfStats { symbol: char::from_u32(lastsymbol).unwrap(), min: last, lag: last-result.min }
+                            });
                     }
                 }
                 for result in data.results.write().unwrap().iter_mut() {
@@ -436,7 +441,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         if !targets.is_empty() {
             tokio::spawn(async move {
                 for (tx, proto) in targets {
-                    tx.send(proto).await.unwrap();
+                    let _ = tx.send(proto).await; // Can fail if the connection was dropped
                 }
             });
         }
@@ -509,14 +514,19 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
             .title(" Local interface stats ")
             .borders(Borders::ALL);
     let mut content: Vec<Row> = vec![];
-    for (intf, stats) in data.intf.read().unwrap().iter() {
-        content.push(Row::new(vec![ (*intf).clone(), format!("{:^5}", stats.min), format!("{:^5}", stats.lag) ]));
+    {
+        let intf = data.intf.read().unwrap();
+        let mut rows: Vec<_> = intf.iter().collect();
+        rows.sort_by(|a, b| a.1.symbol.cmp(&b.1.symbol));
+        for (intf, stats) in rows {
+            content.push(Row::new(vec![ format!(" {} ", stats.symbol), (*intf).clone(), format!("{:^5}", stats.min), format!("{:^5}", stats.lag) ]));
+        }
     }
     let table = Table::new(content)
         .block(block)
         .column_spacing(1)
-        .header(Row::new(vec![ "Interface", "Best", "Lag" ]))
-        .widths(&[Constraint::Length(20), Constraint::Length(5), Constraint::Length(5)]);
+        .header(Row::new(vec![ "Sym", "Interface", "Best", "Lag" ]))
+        .widths(&[Constraint::Length(3), Constraint::Length(20), Constraint::Length(5), Constraint::Length(5)]);
     f.render_widget(table, vert2[1]);
 
     let block = Block::default()
@@ -531,7 +541,11 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
             mark = "▔";
         }
         else { mark = " "; }
-        let header = format!("{:10} {:39} ", result.node, result.port);
+        let symbol = match data.intf.read().unwrap().get(&result.intf) {
+            Some(i) => i.symbol,
+            None => ' '
+        };
+        let header = format!("{:10} {} {:39} ", result.node, symbol, result.port);
         let mut line = Vec::with_capacity((vert1[1].width-50).into());
         line.push(Span::from(header));
         if let Some(rtt) = result.last {
