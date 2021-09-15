@@ -107,10 +107,10 @@ enum PortState {
 
 lazy_static! {
     static ref MYNAME: RwLock<Vec<u8>> = RwLock::new(vec![]);
+    static ref EPOCH: Instant = Instant::now();
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
-    let epoch = Instant::now();
     let (readtx, mut readrx) = sync::mpsc::channel(10);
     let mut cohort = (0..SPREAD).cycle();
     let mut nodes: HashMap<String, PingNode> = HashMap::new();
@@ -167,7 +167,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                             let route = addr.ip().to_string();
                                             if let Some(sock) = socks.get(&route) {
                                                 if debug { println!("Sending UDP probe to {}:{} via {}", target.ip, target.port, route); }
-                                                let frame = build_frame(&node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
+                                                let frame = build_frame(&node.sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
                                                 if let Err(e) = sock.send_to(&frame, (target.ip.as_ref(), target.port)).await {
                                                     eprintln!("Failed to send UDP packet to {}:{} via {}: {}", target.ip, target.port, route, e);
                                                 }
@@ -197,7 +197,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                             target.usable = false;
                                         },
                                         PortState::Init(ref mut n) => { *n = 0; },
-                                        PortState::Ok => { target.state = PortState::Loss(1); },
+                                        PortState::Ok => { target.state = PortState::Loss(1);
+                                            // Immediately send another ping in case the path just needs to be hole-punched again
+                                            // let frame = build_frame(&node.sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
+                                            // let _ = sock.send_to(&frame, (target.ip.as_ref(), target.port)).await;
+                                        },
                                         PortState::Loss(ref mut n) => {
                                             *n += 1;
                                             if *n >= 3 {
@@ -237,7 +241,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 continue;
                             }
                             let sock = res.unwrap();
-                            let frame = build_frame(&node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
+                            let frame = build_frame(&node.sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
                             if let Err(e) = sock.send_to(&frame, (target.ip.as_ref(), target.port)).await {
                                 eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
                             }
@@ -300,7 +304,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
                                 }
                                 if !port.usable || port.state > PortState::Loss(0) {
-                                    let frame = build_frame(&node.sbox, Protocol::Ping { value: epoch.elapsed().as_millis() as u64 });
+                                    let frame = build_frame(&node.sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
                                     if let Err(e) = sock.send_to(&frame, &remote).await {
                                         eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
                                     }
@@ -311,7 +315,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     port.usable = true;
                                     if debug { println!("Marked {} as pingable via {}", port.ip, port.route); }
                                 }
-                                let rtt = match (epoch.elapsed().as_millis() as u64-value) as u16 { 0 => 1, n => n };
+                                let rtt = match (EPOCH.elapsed().as_millis() as u64-value) as u16 { 0 => 1, n => n };
                                 if rtt < port.minrtt { port.minrtt = rtt; }
                                 if port.waiting { // Probe pings don't have waiting set
                                     port.waiting = false;
