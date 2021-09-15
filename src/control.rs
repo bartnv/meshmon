@@ -187,8 +187,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                                 if e.lag > last-result.min { e.lag = last-result.min; }
                             })
                             .or_insert({
-                                lastsymbol += 1;
-                                IntfStats { symbol: char::from_u32(lastsymbol).unwrap(), min: last, lag: last-result.min }
+                                IntfStats { symbol: char::from_u32({ lastsymbol += 1; lastsymbol }).unwrap_or('?'), min: last, lag: last-result.min }
                             });
                     }
                 }

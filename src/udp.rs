@@ -340,7 +340,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                 }
             }
             res = udprx.recv() => { // Messages from control task
-                match res.unwrap() {
+                match res.expect("Control task has crashed; exiting...") {
                     Control::ScanNode(name, external) => {
                         let config = config.read().unwrap();
                         let node = match config.nodes.iter().find(|i| i.name == name) {
