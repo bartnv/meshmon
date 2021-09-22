@@ -542,7 +542,7 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
             Some(i) => i.symbol,
             None => ' '
         };
-        let header = format!("{:10} {} {:39} ", result.node, symbol, result.port);
+        let header = format!("{:10} {:39} {} ", result.node, result.port, symbol);
         let mut line = Vec::with_capacity((vert1[1].width-50).into());
         line.push(Span::from(header));
         if let Some(rtt) = result.last {
