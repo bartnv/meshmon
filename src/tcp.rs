@@ -11,6 +11,14 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         Ok(a) => a.to_string(),
         Err(_) => String::from("{unknown}")
     });
+    if active {
+        conn.seq = {
+            let config = config.read().unwrap();
+            let mut runtime = config.runtime.write().unwrap();
+            runtime.connseq += 1;
+            runtime.connseq
+        }
+    }
     let mut sbox: Option<SalsaBox> = None;
     let mut buf = vec![0; 1500];
     let mut collector: Vec<u8> = vec![];
@@ -22,7 +30,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
     let debug = config.read().unwrap().runtime.read().unwrap().debug;
     let mut frames: Vec<Vec<u8>> = Vec::with_capacity(10); // Collects frames to send to our peer
     let mut control: Vec<Control> = Vec::with_capacity(10); // Collects Control msgs to send to the control task
-    let mut links: Vec<(String, String, u8)> = Vec::with_capacity(10);
+    let mut links: Vec<(String, String, u32)> = Vec::with_capacity(10);
     let mut interval = tokio::time::interval(Duration::from_secs(10));
     'select: loop {
         tokio::select!{
@@ -135,7 +143,6 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 let mut keybytes: [u8; 32] = [0; 32];
                                 keybytes.copy_from_slice(&base64::decode(pubkey).unwrap());
                                 conn.pubkey = Some(PublicKey::from(keybytes));
-                                conn.prio = node.prio;
 
                                 sbox = Some(SalsaBox::new(conn.pubkey.as_ref().unwrap(), config.runtime.read().unwrap().privkey.as_ref().unwrap()));
                             }
@@ -180,11 +187,11 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 if active {
                                     if !runtime.graph.has_node(&conn.nodename) {
                                         for edge in runtime.graph.raw_edges() {
-                                            frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                            frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), seq: edge.weight }));
                                         }
                                     }
                                     else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
-                                    frames.push(build_frame(&sbox, Protocol::Sync { weight: conn.prio }));
+                                    frames.push(build_frame(&sbox, Protocol::Sync { seq: conn.seq }));
                                 }
                                 else {
                                     frames.push(build_frame(&sbox, Protocol::Ports { node: myname.clone(), ports: runtime.listen.clone() }));
@@ -224,7 +231,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 }
                             }
                         },
-                        Protocol::Link { from, to, prio } => {
+                        Protocol::Link { from, to, seq } => {
                             if conn.state < ConnState::Encrypted {
                                 eprintln!("Protocol desync: received Link before Crypt from {}; dropping", conn.nodename);
                                 return;
@@ -237,13 +244,13 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 frames.push(build_frame(&sbox, Protocol::Node{ name: to.clone(), pubkey: String::new() }));
                             }
                             if conn.state == ConnState::Encrypted { // Buffer links received before Sync
-                                links.push((from, to, prio));
+                                links.push((from, to, seq));
                             }
                             else {
-                                control.push(Control::NewLink(conn.nodename.clone(), from, to, prio));
+                                control.push(Control::NewLink(conn.nodename.clone(), from, to, seq));
                             }
                         },
-                        Protocol::Sync { weight } => {
+                        Protocol::Sync { seq } => {
                             if conn.state < ConnState::Encrypted {
                                 eprintln!("Protocol desync: received Sync before Crypt from {}; dropping", conn.nodename);
                                 return;
@@ -253,20 +260,21 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 let runtime = config.runtime.read().unwrap();
                                 if !runtime.graph.has_node(&conn.nodename) {
                                     for edge in runtime.graph.raw_edges() {
-                                        frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), prio: edge.weight }));
+                                        frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), seq: edge.weight }));
                                     }
                                 }
                                 else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
-                                frames.push(build_frame(&sbox, Protocol::Sync { weight }));
+                                conn.seq = seq;
+                                frames.push(build_frame(&sbox, Protocol::Sync { seq }));
                             }
-                            if active { control.push(Control::NewLink(conn.nodename.clone(), myname.clone(), conn.nodename.clone(), weight)); }
-                            else { control.push(Control::NewLink(conn.nodename.clone(), conn.nodename.clone(), myname.clone(), weight)); }
-                            for (from, to, prio) in links.drain(..) {
-                                control.push(Control::NewLink(conn.nodename.clone(), from, to, prio));
+                            if active { control.push(Control::NewLink(conn.nodename.clone(), myname.clone(), conn.nodename.clone(), seq)); }
+                            else { control.push(Control::NewLink(conn.nodename.clone(), conn.nodename.clone(), myname.clone(), seq)); }
+                            for (from, to, seq) in links.drain(..) {
+                                control.push(Control::NewLink(conn.nodename.clone(), from, to, seq));
                             }
                             control.push(Control::NewPeer(conn.nodename.clone(), tx.clone()));
                             conn.state = ConnState::Synchronized;
-                            if debug { println!("Synchronized with {}", conn.nodename); }
+                            if debug { println!("Synchronized with {} ({}) with sequence no {}", conn.nodename, match active { true => "active", false => "passive" }, conn.seq); }
                         },
                         Protocol::Drop { from, to } => {
                             control.push(Control::DropLink(conn.nodename.clone(), from, to));

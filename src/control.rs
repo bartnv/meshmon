@@ -202,7 +202,16 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
                 redraw = true;
             },
-            Control::NewLink(sender, from, to, prio) => {
+            Control::NewLink(sender, from, to, seq) => {
+                let mut config = aconfig.write().unwrap();
+                if let Some(mut node) = config.nodes.iter_mut().find(|node| node.name == from) {
+                    if node.lastconnseq == seq {
+                        if debug { println!("Rejecting repeated Link message: {} {} {}", from, to, seq); }
+                        continue;
+                    }
+                    node.lastconnseq = seq;
+                }
+                drop(config);
                 let config = aconfig.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
                 let fromidx = match runtime.graph.find_node(&from) {
@@ -240,19 +249,19 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let changes = match runtime.graph.find_edge(fromidx, toidx) {
                     Some(idx) => {
                         match runtime.graph[idx] {
-                            val if val == prio => false,
+                            val if val == seq => false,
                             _ => {
-                                runtime.graph[idx] = prio;
+                                runtime.graph[idx] = seq;
                                 true
                             }
                         }
                     },
                     None => {
-                        runtime.graph.add_edge(fromidx, toidx, prio);
+                        runtime.graph.add_edge(fromidx, toidx, seq);
                         true
                     }
                 };
-                if changes { relaymsgs.push((sender, Protocol::Link { from, to, prio }, true)); };
+                if changes { relaymsgs.push((sender, Protocol::Link { from, to, seq }, true)); };
                 runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::DropLink(sender, from, to) => {
@@ -274,8 +283,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             runtime.log.push((unixtime(), text));
                             redraw = true;
                         }
-                        relaymsgs.push((sender, Protocol::Drop { from, to }, true));
                         runtime.msp = calculate_msp(&runtime.graph);
+                        relaymsgs.push((sender, Protocol::Drop { from, to }, true));
                     }
                 }
             },
@@ -297,8 +306,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let mut runtime = config.runtime.write().unwrap();
                 if let Some(nodeidx) = runtime.graph.find_node(&name) {
                     if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
-                        runtime.graph.remove_edge(edge);
                         relaymsgs.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
+                        runtime.graph.remove_edge(edge);
                     }
                     let dropped = runtime.graph.drop_detached_nodes();
                     // if !dropped.is_empty() { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
@@ -476,7 +485,7 @@ fn find_next_node(nodes: &[Node], start: usize) -> Option<usize> {
         return Some(idx);
     }
 }
-fn calculate_msp(graph: &UnGraph<String, u8>) -> UnGraph<String, u8> {
+fn calculate_msp(graph: &UnGraph<String, u32>) -> UnGraph<String, u32> {
     // The resulting graph will have all nodes of the input graph with identical indices
     graph::Graph::from_elements(algo::min_spanning_tree(&graph))
 }

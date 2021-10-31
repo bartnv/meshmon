@@ -25,7 +25,7 @@ pub trait GraphExt {
     fn find_weakly_connected_nodes(&self) -> Vec<String>;
     fn weakly_connected_dfs(&self, v: graph::NodeIndex, visited: &mut Vec<graph::NodeIndex>, tin: &mut HashMap<graph::NodeIndex, i8>, low: &mut HashMap<graph::NodeIndex, i8>, timer: &mut i8, parent: Option<graph::NodeIndex>) -> Vec<String>;
 }
-impl GraphExt for UnGraph<String, u8> {
+impl GraphExt for UnGraph<String, u32> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
         self.node_indices().find(|i| self[*i] == name)
     }
@@ -115,9 +115,9 @@ struct Node {
     listen: Vec<String>,
     pubkey: String,
     #[serde(skip)]
-    prio: u8,
-    #[serde(skip)]
     connected: bool,
+    #[serde(skip)]
+    lastconnseq: u32,
 }
 
 #[derive(Default)]
@@ -126,8 +126,9 @@ struct Runtime {
     privkey: Option<SecretKey>,
     pubkey: Option<PublicKey>,
     sysinfo: Option<sysinfo::System>,
-    graph: UnGraph<String, u8>,
-    msp: UnGraph<String, u8>,
+    graph: UnGraph<String, u32>,
+    msp: UnGraph<String, u32>,
+    connseq: u32,
     acceptnewnodes: bool,
     tui: bool,
     debug: bool,
@@ -141,7 +142,7 @@ struct Connection {
     lastdata: Instant,
     state: ConnState,
     pubkey: Option<PublicKey>,
-    prio: u8,
+    seq: u32,
     rtt: f32,
 }
 impl Connection {
@@ -151,7 +152,7 @@ impl Connection {
             lastdata: Instant::now(),
             state: ConnState::New,
             pubkey: None,
-            prio: 0,
+            seq: 0,
             rtt: f32::NAN,
         }
     }
@@ -169,7 +170,7 @@ pub enum Control {
     Round,
     NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for control messages to the TCP task)
     DropPeer(String), // Node name
-    NewLink(String, String, String, u8), // Sender name, link from, link to, link weight
+    NewLink(String, String, String, u32), // Sender name, link from, link to, link seqno
     DropLink(String, String, String), // Sender name, link from, link to
     Ports(String, String, Vec<String>), // From node, about node, ports
     Relay(String, Protocol), // Sender name, protocol message
@@ -186,8 +187,8 @@ pub enum Protocol {
     Crypt { boottime: u64, osversion: String },
     Ports { node: String, ports: Vec<String> },
     Node { name: String, pubkey: String },
-    Link { from: String, to: String, prio: u8 },
-    Sync { weight: u8 },
+    Link { from: String, to: String, seq: u32 },
+    Sync { seq: u32 },
     Drop { from: String, to: String },
     Check { step: u8 },
     Ping { value: u64 },
@@ -266,12 +267,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .as_slice()
         .try_into()
         .expect("Entry 'privkey' in config.toml is not a valid base64 private key");
-        let mut config = config.write().unwrap();
-        let mut prio = 1;
-        for node in config.nodes.iter_mut() {
-            node.prio = prio;
-            prio += 1;
-        }
+        let config = config.write().unwrap();
         let mut runtime = config.runtime.write().unwrap();
         runtime.listen = get_local_interfaces(&config.listen);
         runtime.privkey = Some(rawkey.into());
