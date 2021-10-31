@@ -4,6 +4,7 @@ use petgraph::{ graph, graph::UnGraph, dot, data::FromElements, algo };
 use termion::{ raw::IntoRawMode, screen::AlternateScreen };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
+use rand::seq::SliceRandom;
 use crate::{ Config, Node, Control, Protocol, GraphExt, unixtime };
 
 static HISTSIZE: usize = 1440;
@@ -133,8 +134,11 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     if ticks%15 == 0 { // Only check for weak connections once every 15 minutes
                         let runtime = config.runtime.read().unwrap();
                         if runtime.graph.node_count() > 4 {
-                            if let Some(name) = runtime.graph.find_weakly_connected_node() {
-                                if let Some(node) = config.nodes.iter().find(|i| i.name == name) {
+                            let nodes = runtime.graph.find_weakly_connected_nodes();
+                            if !nodes.is_empty() {
+                                if debug { println!("Weakly connected to {}", nodes.join(",")); }
+                                let name = nodes.choose(&mut rand::thread_rng()).unwrap();
+                                if let Some(node) = config.nodes.iter().find(|i| i.name == *name) {
                                     if debug { println!("Connecting to node {} to fix weak connection in network", name); }
                                     for addr in &node.listen {
                                         ports.push(addr.clone());
