@@ -79,10 +79,10 @@ struct IntfStats {
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>) {
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
-    let (myname, debug) = {
+    let (myname, results, debug) = {
         let config = aconfig.read().unwrap();
         let runtime = config.runtime.read().unwrap();
-        (config.name.clone(), runtime.debug)
+        (config.name.clone(), runtime.results, runtime.debug)
     };
     let mut nodeidx = usize::MAX-1;
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
@@ -210,6 +210,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         if !peers.is_empty() {
                             let text = format!("Node {} joined the network", from);
                             data.push_log(text.clone());
+                            if term.is_none() { println!("{}", &text); }
                             runtime.log.push((unixtime(), text));
                             redraw = true;
                         }
@@ -225,6 +226,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         if !peers.is_empty() {
                             let text = format!("Node {} joined the network", to);
                             data.push_log(text.clone());
+                            if term.is_none() { println!("{}", &text); }
                             runtime.log.push((unixtime(), text));
                             redraw = true;
                         }
@@ -264,6 +266,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                                 n => format!("Netsplit: lost connection to {} nodes ({})", n, dropped.join(", "))
                             };
                             data.push_log(text.clone());
+                            if term.is_none() { println!("{}", &text); }
                             runtime.log.push((unixtime(), text));
                             redraw = true;
                         }
@@ -278,6 +281,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     let mut runtime = config.runtime.write().unwrap();
                     let text = format!("Joined the network with {} other nodes", runtime.graph.node_count()-1);
                     data.push_log(text.clone());
+                    if term.is_none() { println!("{}", &text); }
                     runtime.log.push((unixtime(), text));
                     redraw = true;
                 }
@@ -357,14 +361,14 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                       _ => format!("Node {:10} {:39} -> {:39} {:>4}ms", node, intf, port, rtt)
                     });
                 }
-                if debug { println!("{}", data.ping.read().unwrap().front().unwrap()); }
+                if results { println!("{}", data.ping.read().unwrap().front().unwrap()); }
                 redraw = true;
             },
             Control::Update(text) => {
                 data.push_log(text.clone());
+                if term.is_none() { println!("{}", &text); }
                 let config = aconfig.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
-                data.push_log(text.clone());
                 runtime.log.push((unixtime(), text));
                 if runtime.log.len() > 25 {
                     let drain = runtime.log.len()-25;

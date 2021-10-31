@@ -324,10 +324,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                                 match port.state {
                                     PortState::New => { port.state = PortState::Init(1); },
-                                    PortState::Init(n) if n == 5 => {
-                                        if debug { println!("Port initialized with minrtt {}", port.minrtt); }
-                                        port.state = PortState::Ok;
-                                    },
+                                    PortState::Init(n) if n == 5 => { port.state = PortState::Ok; },
                                     PortState::Init(ref mut n) => { *n += 1; },
                                     PortState::Ok => { },
                                     PortState::Loss(n) => {

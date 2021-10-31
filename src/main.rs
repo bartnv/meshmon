@@ -136,6 +136,7 @@ struct Runtime {
     acceptnewnodes: bool,
     tui: bool,
     debug: bool,
+    results: bool,
     log: Vec<(u64, String)> // Unix timestamp, log message
 }
 
@@ -236,6 +237,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .arg(Arg::with_name("http").short("h").long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
             .arg(Arg::with_name("tui").short("t").long("tui").help("Activate the interactive terminal user-interface"))
+            .arg(Arg::with_name("results").long("results").help("Log individual ping results"))
             .arg(Arg::with_name("debug").long("debug").help("Verbose logging").conflicts_with("tui"))
         );
     let args = app.get_matches();
@@ -281,6 +283,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key());
         runtime.acceptnewnodes = args.is_present("acceptnewnodes");
         runtime.tui = args.is_present("tui");
+        runtime.results = args.is_present("results");
         runtime.debug = args.is_present("debug");
         runtime.sysinfo = Some(sysinfo::System::new_all());
         runtime.sysinfo.as_mut().unwrap().refresh_all();
