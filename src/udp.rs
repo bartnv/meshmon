@@ -165,12 +165,9 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     for addr in i.ips {
                                         if addr.contains(ip) || (!isprivate(ip) && (ip.is_ipv4() && addr.is_ipv4()) || (ip.is_ipv6() && addr.is_ipv6())) {
                                             let route = addr.ip().to_string();
-                                            if let Some(sock) = socks.get(&route) {
-                                                if debug { println!("Sending UDP probe to {}:{} via {}", target.ip, target.port, route); }
-                                                let frame = build_frame(&node.sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
-                                                if let Err(e) = sock.send_to(&frame, (target.ip.as_ref(), target.port)).await {
-                                                    eprintln!("Failed to send UDP packet to {}:{} via {}: {}", target.ip, target.port, route, e);
-                                                }
+                                            if debug { println!("Sending UDP probe to {}:{} via {}", target.ip, target.port, route); }
+                                            if !send_ping(&socks, &node.sbox, &target, &route).await && debug {
+                                                eprintln!("Failed to send UDP probe to {}:{} via {}", target.ip, target.port, route);
                                             }
                                         }
                                     }
@@ -199,8 +196,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         PortState::Init(ref mut n) => { *n = 0; },
                                         PortState::Ok => { target.state = PortState::Loss(1);
                                             // Immediately send another ping in case the path just needs to be hole-punched again
-                                            // let frame = build_frame(&node.sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
-                                            // let _ = sock.send_to(&frame, (target.ip.as_ref(), target.port)).await;
+                                            // send_ping(&socks, &node.sbox, &target, &target.route).await;
                                         },
                                         PortState::Loss(ref mut n) => {
                                             *n += 1;
@@ -235,19 +231,12 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     continue;
                                 }
                             }
-                            let res = socks.get(&target.route);
-                            if res.is_none() {
-                                eprintln!("Failed to find local UDP socket {}", target.route);
-                                continue;
-                            }
-                            let sock = res.unwrap();
-                            let frame = build_frame(&node.sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
-                            if let Err(e) = sock.send_to(&frame, (target.ip.as_ref(), target.port)).await {
-                                eprintln!("Failed to send UDP packet to {} via {}: {}", target.port, target.route, e);
-                            }
-                            else {
+                            if send_ping(&socks, &node.sbox, &target, &target.route).await {
                                 target.sent += 1;
                                 target.waiting = true;
+                            }
+                            else if debug {
+                                eprintln!("Failed to send UDP ping to {}:{} via {}", target.ip, target.port, target.route);
                             }
                         }
                         if count > 15 { eprintln!("Node {} has {} unusable ports", name, count); }
@@ -304,9 +293,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
                                 }
                                 if !port.usable || port.state > PortState::Loss(0) {
-                                    let frame = build_frame(&node.sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
-                                    if let Err(e) = sock.send_to(&frame, &remote).await {
-                                        eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
+                                    if !send_ping(&socks, &node.sbox, &port, &port.route).await && debug {
+                                        eprintln!("Failed to send UDP probe to {}:{} via {}", port.ip, port.port, port.route);
                                     }
                                 }
                             },
@@ -426,6 +414,16 @@ fn isprivate(ip: std::net::IpAddr) -> bool {
     false
 }
 
+async fn send_ping(socks: &HashMap<String, Arc<net::UdpSocket>>, sbox: &Option<SalsaBox>, target: &PingPort, route: &String) -> bool {
+    let res = socks.get(route);
+    if res.is_none() { return false; }
+    let sock = res.unwrap();
+    let frame = build_frame(sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
+    match sock.send_to(&frame, (target.ip.as_ref(), target.port)).await {
+        Ok(_) => true,
+        Err(_) => false
+    }
+}
 fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
     // println!("Sending {:?}", proto);
     let payload = match sbox {
