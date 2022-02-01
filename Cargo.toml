@@ -2,7 +2,7 @@
 name = "meshmon"
 version = "0.3.0"
 authors = ["Bart Noordervliet <bart@mmvi.nl>"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = [ "full" ] }
