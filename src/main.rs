@@ -5,7 +5,7 @@ use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, defaul
 use tokio::{ fs, net, sync };
 use sysinfo::{ SystemExt };
 use petgraph::{ graph, graph::UnGraph };
-use clap::{ Arg, App, AppSettings, SubCommand };
+use clap::{ Arg, App, AppSettings };
 use pnet::datalink::interfaces;
 use warp::Filter;
 use generic_array::GenericArray;
@@ -220,27 +220,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .author("Bart Noordervliet <bart@mmvi.nl>")
         .about("A distributed full-mesh network monitor")
         .setting(AppSettings::SubcommandRequiredElseHelp)
-        .subcommand(SubCommand::with_name("init")
+        .subcommand(App::new("init")
             .about("Create a new configuration file and exit")
-            .arg(Arg::with_name("name").short("n").long("name").takes_value(true).help("The name for this node"))
+            .arg(Arg::new("name").short('n').long("name").takes_value(true).help("The name for this node"))
         )
-        .subcommand(SubCommand::with_name("run")
+        .subcommand(App::new("run")
             .about("Run the monitor")
-            .arg(Arg::with_name("acceptnewnodes").short("a").long("accept").help("Auto-accept new nodes"))
+            .arg(Arg::new("acceptnewnodes").short('a').long("accept").help("Auto-accept new nodes"))
             .arg(
-                Arg::with_name("connect").short("c").long("connect").help("Connect to this <address:port>")
-                    .multiple(true).takes_value(true).number_of_values(1)
+                Arg::new("connect").short('c').long("connect").help("Connect to this <address:port>")
+                    .multiple_occurrences(true).takes_value(true).number_of_values(1)
             )
-            .arg(Arg::with_name("http").short("h").long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
-            .arg(Arg::with_name("tui").short("t").long("tui").help("Activate the interactive terminal user-interface"))
-            .arg(Arg::with_name("results").long("results").help("Log individual ping results"))
-            .arg(Arg::with_name("debug").long("debug").help("Verbose logging").conflicts_with("tui"))
+            .arg(Arg::new("http").short('h').long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
+            .arg(Arg::new("tui").short('t').long("tui").help("Activate the interactive terminal user-interface"))
+            .arg(Arg::new("results").long("results").help("Log individual ping results"))
+            .arg(Arg::new("debug").long("debug").help("Verbose logging").conflicts_with("tui"))
         );
     let args = app.get_matches();
     let config: Arc<RwLock<Config>>;
     if let Some(args) = args.subcommand_matches("init") {
         let mut rng = rand::rngs::OsRng;
-        let privkey = base64::encode(SecretKey::generate(&mut rng).to_bytes());
+        let privkey = base64::encode(SecretKey::generate(&mut rng).as_bytes());
         config = Arc::new(RwLock::new(
             Config {
                 name: args.value_of("name").unwrap_or("MyName").to_string(),
