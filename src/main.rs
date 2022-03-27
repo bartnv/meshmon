@@ -5,7 +5,7 @@ use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, defaul
 use tokio::{ fs, net, sync };
 use sysinfo::{ SystemExt };
 use petgraph::{ graph, graph::UnGraph };
-use clap::{ Arg, App, AppSettings };
+use clap::{ Command, Arg };
 use pnet::datalink::interfaces;
 use warp::Filter;
 use generic_array::GenericArray;
@@ -215,16 +215,17 @@ impl Protocol {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let app = App::new("meshmon")
+    let app = Command::new("meshmon")
         .version(VERSION)
         .author("Bart Noordervliet <bart@mmvi.nl>")
         .about("A distributed full-mesh network monitor")
-        .setting(AppSettings::SubcommandRequiredElseHelp)
-        .subcommand(App::new("init")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(Command::new("init")
             .about("Create a new configuration file and exit")
             .arg(Arg::new("name").short('n').long("name").takes_value(true).help("The name for this node"))
         )
-        .subcommand(App::new("run")
+        .subcommand(Command::new("run")
             .about("Run the monitor")
             .arg(Arg::new("acceptnewnodes").short('a').long("accept").help("Auto-accept new nodes"))
             .arg(
