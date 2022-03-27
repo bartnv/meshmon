@@ -231,7 +231,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Arg::new("connect").short('c').long("connect").help("Connect to this <address:port>")
                     .multiple_occurrences(true).takes_value(true).number_of_values(1)
             )
-            .arg(Arg::new("http").short('h').long("http").takes_value(true).help("Start HTTP server on this <address:port>"))
+            .arg(Arg::new("web").short('w').long("web").takes_value(true).help("Start HTTP server on this <address:port>"))
             .arg(Arg::new("tui").short('t').long("tui").help("Activate the interactive terminal user-interface"))
             .arg(Arg::new("results").long("results").help("Log individual ping results"))
             .arg(Arg::new("debug").long("debug").help("Verbose logging").conflicts_with("tui"))
@@ -284,10 +284,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Start the http server if the --http argument is passed
-    if let Some(port) = args.value_of("http") {
+    if let Some(port) = args.value_of("web") {
         println!("Starting http server on {}", port);
         let config = config.clone();
-        let sa: std::net::SocketAddr = port.parse().expect("--http option did not contain a valid ip:port value");
+        let sa: std::net::SocketAddr = port.parse().expect("--web option did not contain a valid ip:port value");
         tokio::spawn(async move {
             let index = warp::path::end().map(|| warp::reply::html(INDEX_FILE));
             let rpc = warp::path("rpc")
