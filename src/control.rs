@@ -131,7 +131,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
                 else {
                     nodeidx = usize::MAX-1; // Reset node index for regular connections
-                    if ticks%15 == 0 { // Only check for weak connections once every 15 minutes
+                    if ticks%60 == 0 { // Only check for weak connections once every hour
                         let runtime = config.runtime.read().unwrap();
                         if runtime.graph.node_count() > 4 {
                             let nodes = runtime.graph.find_weakly_connected_nodes();

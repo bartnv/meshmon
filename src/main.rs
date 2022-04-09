@@ -24,7 +24,7 @@ pub trait GraphExt {
     fn drop_detached_nodes(&mut self) -> Vec<String>;
     fn print(&self);
     fn find_weakly_connected_nodes(&self) -> Vec<String>;
-    fn weakly_connected_dfs(&self, v: graph::NodeIndex, visited: &mut Vec<graph::NodeIndex>, tin: &mut HashMap<graph::NodeIndex, i8>, low: &mut HashMap<graph::NodeIndex, i8>, timer: &mut i8, parent: Option<graph::NodeIndex>) -> Vec<String>;
+    fn weakly_connected_dfs(&self, v: graph::NodeIndex, depth: u8, visited: &mut HashMap<graph::NodeIndex, u8>, found: &mut Vec<String>, parent: Option<graph::NodeIndex>) -> (u8, Vec<String>);
 }
 impl GraphExt for UnGraph<String, u32> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
@@ -55,44 +55,45 @@ impl GraphExt for UnGraph<String, u32> {
             println!("Edge: {} -> {} ({})", self[edge.source()], self[edge.target()], edge.weight);
         }
     }
-    fn find_weakly_connected_nodes(&self) -> Vec<String> {
-        let mut timer: i8 = 0;
-        let mut visited: Vec<graph::NodeIndex> = Vec::new();
-        let mut tin: HashMap<graph::NodeIndex, i8> = HashMap::new();
-        let mut low: HashMap<graph::NodeIndex, i8> = HashMap::new();
 
-        self.weakly_connected_dfs(graph::NodeIndex::new(0), &mut visited, &mut tin, &mut low, &mut timer, None)
-    }
-    fn weakly_connected_dfs(&self, v: graph::NodeIndex, visited: &mut Vec<graph::NodeIndex>, tin: &mut HashMap<graph::NodeIndex, i8>, low: &mut HashMap<graph::NodeIndex, i8>, timer: &mut i8, parent: Option<graph::NodeIndex>) -> Vec<String> {
+    fn find_weakly_connected_nodes(&self) -> Vec<String> {
+        let mut visited: HashMap<graph::NodeIndex, u8> = HashMap::new();
         let mut found: Vec<String> = vec![];
-        visited.push(v);
-        *timer += 1;
-        tin.insert(v, *timer);
-        low.insert(v, *timer);
+
+        self.weakly_connected_dfs(graph::NodeIndex::new(0), 0, &mut visited, &mut found, None);
+        found
+    }
+    fn weakly_connected_dfs(&self, v: graph::NodeIndex, mut depth: u8, visited: &mut HashMap<graph::NodeIndex, u8>, found: &mut Vec<String>, parent: Option<graph::NodeIndex>) -> (u8, Vec<String>) {
+        let mut children: Vec<String> = vec![];
+        if let Some(parent) = parent {
+            if parent.index() != 0 {
+                // if self.contains_edge(graph::NodeIndex::new(0), v) { return (0, children); } // Is this needed?
+                children.push(self[v].clone());
+            }
+        }
+        depth += 1;
+        // println!("Processing {} with depth {}", &self[v], depth);
+        visited.insert(v, depth);
+        let mut low = depth;
 
         for to in self.neighbors(v) {
             if Some(to) == parent { continue; }
-            if visited.contains(&to) {
-                let atin = match tin.get(&to) { Some(i) => *i, None => -1 };
-                let alow = *(low.get(&v).unwrap());
-                low.insert(v, match alow < atin { true => alow, false => atin });
+            if let Some(other) = visited.get(&to) {
+                if *other < low { low = *other; }
             }
             else {
-                found.append(&mut self.weakly_connected_dfs(to, visited, tin, low, timer, Some(v)));
-                let vlow = *(low.get(&v).unwrap());
-                let tolow = match low.get(&to) { Some(i) => *i, None => -1 };
-                low.insert(v, match vlow < tolow { true => vlow, false => tolow });
-            }
-        }
-        if parent.is_some() {
-            for to in self.neighbors(v) {
-                if Some(to) == parent { continue; }
-                if low.get(&to).unwrap() >= tin.get(&v).unwrap() {
-                    found.push(self[to].clone());
+                let (lowest, mut names) = self.weakly_connected_dfs(to, depth, visited, found, Some(v));
+                if v.index() == 0 { continue; }
+                if lowest >= depth {
+                    println!("Node {} is cut vertex for {}", &self[v], names.join(", "));
+                    found.append(&mut names);
                 }
+                else if lowest < low { low = lowest; }
+                children.append(&mut names);
             }
         }
-        found
+        // println!("Finished   {} with depth {} low {}", &self[v], depth, low);
+        (low, children)
     }
 }
 
