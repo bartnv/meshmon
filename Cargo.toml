@@ -23,3 +23,7 @@ warp = { version = "0.3", features = ["default", "tls"] }
 lazy_static = "1"
 tui = { version = "0.17", default-features = false, features = ['termion'] }
 termion = "1"
+
+[profile.release]
+strip = true
+#lto = "thin"
