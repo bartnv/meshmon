@@ -3,7 +3,7 @@ use crypto_box::{ PublicKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
 use rmp_serde::decode::Error as DecodeError;
 use tokio::{ net, sync };
-use pnet::{ datalink::interfaces, ipnetwork::IpNetwork };
+use pnet::{ datalink::interfaces, ipnetwork::IpNetwork, ipnetwork::Ipv6Network };
 use lazy_static::lazy_static;
 use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame };
 
@@ -49,7 +49,7 @@ impl PingNode {
     }
 }
 struct PingPort {
-    label: &'static str,
+    label: String,
     ip: String,
     port: u16,
     route: String,
@@ -63,20 +63,9 @@ struct PingPort {
 impl PingPort {
     fn from(port: &str, route: Option<String>, usable: bool) -> PingPort {
         let sa: SocketAddr = port.parse().unwrap();
-        let private = isprivate(sa.ip());
         let label = match sa {
-            SocketAddr::V4(_) => {
-                match private {
-                    true => "IPv4-private",
-                    false => "IPv4-global"
-                }
-            },
-            SocketAddr::V6(_) => {
-                match private {
-                    true => "IPv6-private",
-                    false => "IPv6-global"
-                }
-            }
+            SocketAddr::V4(sa) => sa.ip().to_string(),
+            SocketAddr::V6(sa) => Ipv6Network::new(*sa.ip(), 64).unwrap().network().to_string()
         };
         PingPort {
             label,
