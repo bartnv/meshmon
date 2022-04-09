@@ -9,6 +9,7 @@ use clap::{ Command, Arg };
 use pnet::datalink::interfaces;
 use warp::Filter;
 use generic_array::GenericArray;
+use chrono::offset::Local;
 
 mod control;
 mod tcp;
@@ -463,4 +464,7 @@ pub fn decrypt_frame(sbox: &Option<SalsaBox>, payload: &[u8]) -> Result<Vec<u8>,
 
 pub fn unixtime() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+pub fn timestamp() -> String {
+    Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }

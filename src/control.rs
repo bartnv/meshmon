@@ -5,7 +5,7 @@ use termion::{ raw::IntoRawMode, screen::AlternateScreen };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use crate::{ Config, Node, Control, Protocol, GraphExt, unixtime };
+use crate::{ Config, Node, Control, Protocol, GraphExt, unixtime, timestamp };
 
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
@@ -205,10 +205,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             Control::NewLink(sender, from, to, seq) => {
                 let mut config = aconfig.write().unwrap();
                 if let Some(mut node) = config.nodes.iter_mut().find(|node| node.name == from) {
-                    if node.lastconnseq == seq {
-                        if debug { println!("Rejecting repeated Link message: {} {} {}", from, to, seq); }
-                        continue;
-                    }
+                    if node.lastconnseq == seq { continue; }
                     node.lastconnseq = seq;
                 }
                 drop(config);
@@ -221,7 +218,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             udpmsgs.push(Control::ScanNode(from.clone(), false));
                         }
                         if !peers.is_empty() {
-                            let text = format!("Node {} joined the network", from);
+                            let text = format!("{} Node {} joined the network", timestamp(), from);
                             data.push_log(text.clone());
                             if term.is_none() { println!("{}", &text); }
                             runtime.log.push((unixtime(), text));
@@ -237,7 +234,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             udpmsgs.push(Control::ScanNode(to.clone(), false));
                         }
                         if !peers.is_empty() {
-                            let text = format!("Node {} joined the network", to);
+                            let text = format!("{} Node {} joined the network", timestamp(), to);
                             data.push_log(text.clone());
                             if term.is_none() { println!("{}", &text); }
                             runtime.log.push((unixtime(), text));
@@ -265,18 +262,19 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 runtime.msp = calculate_msp(&runtime.graph);
             },
             Control::DropLink(sender, from, to) => {
-                let config = aconfig.read().unwrap();
+                let mut config = aconfig.write().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
                 let fres = runtime.graph.find_node(&from);
                 let tres = runtime.graph.find_node(&to);
                 if let (Some(fnode), Some(tnode)) = (fres, tres) {
+                    let mut dropped = vec![];
                     if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                         runtime.graph.remove_edge(edge);
-                        let dropped = runtime.graph.drop_detached_nodes();
+                        dropped = runtime.graph.drop_detached_nodes();
                         if !dropped.is_empty() {
                             let text = match dropped.len() {
-                                1 => format!("Node {} left the network", dropped[0]),
-                                n => format!("Netsplit: lost connection to {} nodes ({})", n, dropped.join(", "))
+                                1 => format!("{} Node {} left the network", timestamp(), dropped[0]),
+                                n => format!("{} Netsplit: lost connection to {} nodes ({})", timestamp(), n, dropped.join(", "))
                             };
                             data.push_log(text.clone());
                             if term.is_none() { println!("{}", &text); }
@@ -286,13 +284,15 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         runtime.msp = calculate_msp(&runtime.graph);
                         relaymsgs.push((sender, Protocol::Drop { from, to }, true));
                     }
+                    drop(runtime);
+                    config.nodes.iter_mut().for_each(|node| { if dropped.contains(&node.name) { node.lastconnseq = 0; } });
                 }
             },
             Control::NewPeer(name, tx) => {
                 if peers.is_empty() {
                     let config = aconfig.read().unwrap();
                     let mut runtime = config.runtime.write().unwrap();
-                    let text = format!("Joined the network with {} other nodes", runtime.graph.node_count()-1);
+                    let text = format!("{} Joined the network with {} other nodes", timestamp(), runtime.graph.node_count()-1);
                     data.push_log(text.clone());
                     if term.is_none() { println!("{}", &text); }
                     runtime.log.push((unixtime(), text));
@@ -302,23 +302,24 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             },
             Control::DropPeer(name) => {
                 peers.remove(&name);
-                let config = aconfig.read().unwrap();
+                let mut config = aconfig.write().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
+                let mut dropped = vec![];
                 if let Some(nodeidx) = runtime.graph.find_node(&name) {
                     if let Some(edge) = runtime.graph.find_edge(mynode, nodeidx) {
                         relaymsgs.push((name.clone(), Protocol::Drop { from: myname.clone(), to: name.clone() }, true));
                         runtime.graph.remove_edge(edge);
                     }
-                    let dropped = runtime.graph.drop_detached_nodes();
+                    dropped = runtime.graph.drop_detached_nodes();
                     // if !dropped.is_empty() { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
                     if peers.is_empty() {
-                        let text = format!("Disconnected from the network; lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" });
+                        let text = format!("{} Disconnected from the network; lost {} node{}", timestamp(), dropped.len(), match dropped.len() { 1 => "", _ => "s" });
                         data.push_log(text.clone());
                         runtime.log.push((unixtime(), text));
                     }
                     else {
-                        for node in dropped {
-                            let text = format!("Node {} left the network", node);
+                        for node in &dropped {
+                            let text = format!("{} Node {} left the network", timestamp(), node);
                             data.push_log(text.clone());
                             runtime.log.push((unixtime(), text));
                         }
@@ -326,6 +327,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     redraw = true;
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
+                drop(runtime);
+                config.nodes.iter_mut().for_each(|node| { if dropped.contains(&node.name) { node.lastconnseq = 0; } });
             },
             Control::Ports(from, node, ports) => {
                 let mut config = aconfig.write().unwrap();
@@ -378,6 +381,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 redraw = true;
             },
             Control::Update(text) => {
+                let text = format!("{} {}", timestamp(), text);
                 data.push_log(text.clone());
                 if term.is_none() { println!("{}", &text); }
                 let config = aconfig.read().unwrap();
