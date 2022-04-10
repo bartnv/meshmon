@@ -314,10 +314,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tokio::spawn(async move {
             let debug = config.read().unwrap().runtime.read().unwrap().debug;
             loop {
-                if let Ok((socket, _)) = listener.accept().await {
+                if let Ok((socket, addr)) = listener.accept().await {
                     let ctrltx = ctrltx.clone();
                     let config = config.clone();
-                    if debug { println!("Incoming connection from {} to {}", socket.peer_addr().unwrap(), socket.local_addr().unwrap()); }
+                    if debug { println!("Incoming connection from {} to {}", addr, socket.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap())); }
                     tokio::spawn(async move {
                         tcp::run(config, socket, ctrltx, false, learn).await;
                     });
