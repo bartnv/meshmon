@@ -144,8 +144,7 @@ struct Connection {
     lastdata: Instant,
     state: ConnState,
     pubkey: Option<PublicKey>,
-    seq: u32,
-    rtt: f32,
+    seq: u32
 }
 impl Connection {
     fn new(nodename: String) -> Connection {
@@ -154,8 +153,7 @@ impl Connection {
             lastdata: Instant::now(),
             state: ConnState::New,
             pubkey: None,
-            seq: 0,
-            rtt: f32::NAN,
+            seq: 0
         }
     }
 }
