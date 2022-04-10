@@ -152,8 +152,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             for i in interfaces() {
                                 if i.is_up() && !i.is_loopback() {
                                     for addr in i.ips {
-                                        if addr.contains(ip) || (!isprivate(ip) && (ip.is_ipv4() && addr.is_ipv4()) || (ip.is_ipv6() && addr.is_ipv6())) {
+                                        if addr.contains(ip) || // Use interface if its netmask contains the target ip
+                                            !isprivate(ip) && variant_eq(&ip, &addr.ip()) { // or it's global and the same family
                                             let route = addr.ip().to_string();
+                                            if route.starts_with("fe80::") { continue; } // Probably no point in using a link local route
                                             if debug { println!("Sending UDP probe to {}:{} via {}", target.ip, target.port, route); }
                                             if !send_ping(&socks, &node.sbox, &target, &route).await && debug {
                                                 eprintln!("Failed to send UDP probe to {}:{} via {}", target.ip, target.port, route);
@@ -183,7 +185,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                             target.usable = false;
                                         },
                                         PortState::Init(ref mut n) => { *n = 0; },
-                                        PortState::Ok => { target.state = PortState::Loss(1);
+                                        PortState::Ok => {
+                                            target.state = PortState::Loss(1);
                                             // Immediately send another ping in case the path just needs to be hole-punched again
                                             // send_ping(&socks, &node.sbox, &target, &target.route).await;
                                         },
@@ -427,4 +430,8 @@ fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
     frame.extend_from_slice(&name);
     frame.extend_from_slice(&payload);
     frame
+}
+
+fn variant_eq<T>(a: &T, b: &T) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
 }
