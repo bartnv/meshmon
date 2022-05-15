@@ -5,10 +5,13 @@ use termion::{ raw::IntoRawMode, screen::AlternateScreen };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
+use warp::Filter;
+use serde_derive::Serialize;
 use crate::{ Config, Node, Control, Protocol, unixtime, timestamp };
 
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
+static INDEX_FILE: &str = include_str!("index.html");
 
 trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
@@ -156,7 +159,7 @@ struct IntfStats {
     lag: u16
 }
 
-pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>) {
+pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>, web: Option<std::net::SocketAddr>) {
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
     let (myname, results, debug) = {
@@ -169,6 +172,20 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let mut directmsgs: Vec<(String, Protocol)> = vec![];
     let mut udpmsgs: Vec<Control> = vec![];
     let data: Arc<Data> = Arc::new(Default::default());
+
+    if let Some(sa) = web {
+        let config = aconfig.clone();
+        tokio::spawn(async move {
+            let index = warp::path::end().map(|| warp::reply::html(INDEX_FILE));
+            let rpc = warp::path("rpc")
+                       .and(warp::post())
+                       .and(warp::body::form())
+                       .and(warp::any().map(move || config.clone()))
+                       .map(http_rpc)
+                       .with(warp::cors().allow_any_origin());
+            warp::serve(index.or(rpc)).run(sa).await;
+        });
+    }
 
     let mut term = match aconfig.read().unwrap().runtime.read().unwrap().tui {
         false => None,
@@ -683,4 +700,58 @@ fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
     };
     if delaycat < STYLES.len() { return Span::styled(mark, STYLES[delaycat]); }
     return Span::styled("^", (*STYLES.last().unwrap()).fg(Color::Black));
+}
+
+fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp::reply::Json {
+    #[derive(Default, Serialize)]
+    struct JsonGraph {
+        error: Option<String>,
+        nodes: Vec<JsonNode>,
+        edges: Vec<JsonEdge>,
+        log: Vec<(u64, String)>
+    }
+    #[derive(Serialize)]
+    struct JsonNode {
+        id: usize,
+        label: String
+    }
+    #[derive(Serialize)]
+    struct JsonEdge {
+        from: usize,
+        to: usize,
+        color: &'static str
+    }
+
+    let mut res: JsonGraph = Default::default();
+    if let Some(req) = form.get("req") {
+        match req.as_str() {
+            "update" => {
+                let config = config.read().unwrap();
+                let runtime = config.runtime.read().unwrap();
+                let nodes = runtime.graph.raw_nodes();
+                for (i, node) in nodes.iter().enumerate() {
+                    res.nodes.push(JsonNode { id: i, label: node.weight.clone() });
+                }
+                for edge in runtime.graph.raw_edges() {
+                    let color = match runtime.msp.contains_edge(edge.source(), edge.target()) {
+                        true => "rgb(0, 255, 0)",
+                        false => "rgb(100,100,100)"
+                    };
+                    res.edges.push(JsonEdge { from: edge.source().index(), to: edge.target().index(), color });
+                }
+                if let Some(since) = form.get("since") {
+                    let since: u64 = since.parse().unwrap_or(0);
+                    for (ts, msg) in &runtime.log {
+                        if *ts <= since { continue; }
+                        res.log.push((*ts, msg.clone()));
+                    }
+                }
+            },
+            _ => {
+                res.error = Some("Invalid request".to_string());
+            }
+        }
+    }
+    else { res.error = Some("No req parameter in POST".to_string()); }
+    warp::reply::json(&res)
 }

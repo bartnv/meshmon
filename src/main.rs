@@ -1,22 +1,18 @@
-#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
+// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{ aead::Aead, PublicKey, SecretKey, SalsaBox};
+use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto };
 use serde_derive::{ Deserialize, Serialize };
-use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
 use tokio::{ fs, net, sync };
 use sysinfo::{ SystemExt };
 use petgraph::graph::UnGraph;
 use clap::{ Command, Arg };
 use pnet::datalink::interfaces;
-use warp::Filter;
 use generic_array::GenericArray;
 use chrono::offset::Local;
 
 mod control;
 mod tcp;
 mod udp;
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-static INDEX_FILE: &str = include_str!("index.html");
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
@@ -134,6 +130,8 @@ impl Protocol {
     }
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let app = Command::new("meshmon")
@@ -205,21 +203,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("My pubkey is {}", base64::encode(runtime.pubkey.as_ref().unwrap().as_bytes()));
     }
 
-    // Start the http server if the --http argument is passed
-    if let Some(port) = args.value_of("web") {
-        println!("Starting http server on {}", port);
-        let config = config.clone();
-        let sa: std::net::SocketAddr = port.parse().expect("--web option did not contain a valid ip:port value");
-        tokio::spawn(async move {
-            let index = warp::path::end().map(|| warp::reply::html(INDEX_FILE));
-            let rpc = warp::path("rpc")
-                       .and(warp::post())
-                       .and(warp::body::form())
-                       .and(warp::any().map(move || config.clone()))
-                       .map(http_rpc);
-            warp::serve(index.or(rpc)).run(sa).await;
-        });
-    }
+    // Pass the SocketAddr for the http server to the control task if the --web argument is passed
+    let web: Option<std::net::SocketAddr> = match args.value_of("web") {
+        None => None,
+        Some(port) => {
+            println!("Starting http server on {}", port);
+            Some(port.parse().expect("--web option did not contain a valid ip:port value"))
+        }
+    };
 
     let (ctrltx, ctrlrx) = sync::mpsc::channel(10); // Channel used to send updates to the control task
 
@@ -280,7 +271,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Control task; handles coordinating jobs
     let aconfig = config.clone();
     let control = tokio::spawn(async move {
-        control::run(aconfig, ctrlrx, ctrltx, udptx).await;
+        control::run(aconfig, ctrlrx, ctrltx, udptx, web).await;
     });
     let (res,) = tokio::join!(control);
     res.unwrap();
@@ -314,59 +305,6 @@ fn get_local_interfaces(listen: &[String]) -> Vec<String> {
         }
     }
     res
-}
-fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp::reply::Json {
-    #[derive(Default, Serialize)]
-    struct JsonGraph {
-        error: Option<String>,
-        nodes: Vec<JsonNode>,
-        edges: Vec<JsonEdge>,
-        log: Vec<(u64, String)>
-    }
-    #[derive(Serialize)]
-    struct JsonNode {
-        id: usize,
-        label: String
-    }
-    #[derive(Serialize)]
-    struct JsonEdge {
-        from: usize,
-        to: usize,
-        color: &'static str
-    }
-
-    let mut res: JsonGraph = Default::default();
-    if let Some(req) = form.get("req") {
-        match req.as_str() {
-            "update" => {
-                let config = config.read().unwrap();
-                let runtime = config.runtime.read().unwrap();
-                let nodes = runtime.graph.raw_nodes();
-                for (i, node) in nodes.iter().enumerate() {
-                    res.nodes.push(JsonNode { id: i, label: node.weight.clone() });
-                }
-                for edge in runtime.graph.raw_edges() {
-                    let color = match runtime.msp.contains_edge(edge.source(), edge.target()) {
-                        true => "rgb(0, 255, 0)",
-                        false => "rgb(100,100,100)"
-                    };
-                    res.edges.push(JsonEdge { from: edge.source().index(), to: edge.target().index(), color });
-                }
-                if let Some(since) = form.get("since") {
-                    let since: u64 = since.parse().unwrap_or(0);
-                    for (ts, msg) in &runtime.log {
-                        if *ts <= since { continue; }
-                        res.log.push((*ts, msg.clone()));
-                    }
-                }
-            },
-            _ => {
-                res.error = Some("Invalid request".to_string());
-            }
-        }
-    }
-    else { res.error = Some("No req parameter in POST".to_string()); }
-    warp::reply::json(&res)
 }
 
 pub fn encrypt_frame(sbox: &SalsaBox, plaintext: &[u8]) -> Vec<u8> {
