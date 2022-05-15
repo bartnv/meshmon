@@ -1,4 +1,4 @@
-// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{ aead::Aead, PublicKey, SecretKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
 use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto, collections::HashMap };

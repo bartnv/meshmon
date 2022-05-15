@@ -159,7 +159,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                             let route = addr.ip().to_string();
                                             if route.starts_with("fe80::") { continue; } // Probably no point in using a link local route
                                             if debug { println!("Sending UDP probe to {}:{} via {}", target.ip, target.port, route); }
-                                            if !send_ping(&socks, &node.sbox, &target, &route).await && debug {
+                                            if !send_ping(&socks, &node.sbox, target, &route).await && debug {
                                                 eprintln!("Failed to send UDP probe to {}:{} via {}", target.ip, target.port, route);
                                             }
                                         }
@@ -225,7 +225,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     continue;
                                 }
                             }
-                            if send_ping(&socks, &node.sbox, &target, &target.route).await {
+                            if send_ping(&socks, &node.sbox, target, &target.route).await {
                                 target.sent += 1;
                                 target.waiting = true;
                             }
@@ -288,7 +288,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
                                 }
                                 if !port.usable || port.state > PortState::Loss(0) {
-                                    if !send_ping(&socks, &node.sbox, &port, &port.route).await && debug {
+                                    if !send_ping(&socks, &node.sbox, port, &port.route).await && debug {
                                         eprintln!("Failed to send UDP probe to {}:{} via {}", port.ip, port.port, port.route);
                                     }
                                 }
@@ -447,10 +447,7 @@ async fn send_ping(socks: &HashMap<String, Arc<net::UdpSocket>>, sbox: &Option<S
     if res.is_none() { return false; }
     let sock = res.unwrap();
     let frame = build_frame(sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
-    match sock.send_to(&frame, (target.ip.as_ref(), target.port)).await {
-        Ok(_) => true,
-        Err(_) => false
-    }
+    sock.send_to(&frame, (target.ip.as_ref(), target.port)).await.is_ok()
 }
 fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
     // println!("Sending {:?}", proto);
