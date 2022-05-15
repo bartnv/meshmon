@@ -9,7 +9,7 @@ use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_fr
 
 static PINGFREQ: u8 = 60;
 static SPREAD: u8 = 6;
-static HISTSIZE: usize = 60;
+static HISTSIZE: usize = 100;
 
 #[derive(Debug)]
 enum UdpControl {
@@ -57,6 +57,7 @@ struct PingPort {
     waiting: bool,
     sent: u32,
     minrtt: u16,
+    losspct: f32,
     state: PortState,
     hist: VecDeque<u16>,
 }
@@ -76,6 +77,7 @@ impl PingPort {
             waiting: false,
             sent: 0,
             minrtt: u16::MAX,
+            losspct: 0.0,
             state: PortState::New,
             hist: VecDeque::with_capacity(HISTSIZE),
         }
@@ -234,6 +236,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         if count > 15 { eprintln!("Node {} has {} unusable ports", name, count); }
                     }
                 }
+                if tick%(15*SPREAD as u64) == 0 { check_loss(&ctrltx, &mut nodes).await; }
                 tick += 1;
             }
             res = readrx.recv() => { // UdpControl messages from udpreader tasks
@@ -311,6 +314,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         if n >= 3 {
                                             ctrltx.send(Control::Update(format!("{} {} is up after {} losses", name, port.label, n))).await.unwrap();
                                         }
+                                        else if port.losspct == 0.0 {
+                                            check_loss_port(port);
+                                            ctrltx.send(Control::Update(format!("{} {} is suffering {:.0}% packet loss", name, port.label, port.losspct))).await.unwrap();
+                                        }
                                         port.state = PortState::Ok;
                                     },
                                     PortState::Backoff(_) => {
@@ -384,6 +391,35 @@ async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::
                 eprintln!("UDP error: {}", e);
             }
         }
+    }
+}
+
+async fn check_loss(ctrltx: &tokio::sync::mpsc::Sender<Control>, nodes: &mut HashMap<String, PingNode>) {
+    for (name, node) in nodes.iter_mut() {
+        for port in node.ports.iter_mut() {
+            if port.losspct != 0.0 {
+                let pct = port.losspct;
+                check_loss_port(port);
+                if port.losspct == 0.0 {
+                    ctrltx.send(Control::Update(format!("{} {} has recovered from packet loss", name, port.label))).await.unwrap();
+                }
+                else if (port.losspct - pct).abs() > f32::EPSILON {
+                    ctrltx.send(Control::Update(format!("{} {} is suffering {:.0}% packet loss", name, port.label, port.losspct))).await.unwrap();
+                }
+            }
+        }
+    }
+}
+fn check_loss_port(port: &mut PingPort) {
+    let mut count = 0;
+    for x in &port.hist {
+        if *x == 0 { count += 1; }
+    }
+    if count > 0 {
+        port.losspct = (count as f32/port.hist.len() as f32)*100.0;
+    }
+    else {
+        port.losspct = 0.0;
     }
 }
 
