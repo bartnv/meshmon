@@ -5,10 +5,89 @@ use termion::{ raw::IntoRawMode, screen::AlternateScreen };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use crate::{ Config, Node, Control, Protocol, GraphExt, unixtime, timestamp };
+use crate::{ Config, Node, Control, Protocol, unixtime, timestamp };
 
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
+
+trait GraphExt {
+    fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
+    fn has_node(&self, name: &str) -> bool;
+    fn drop_detached_nodes(&mut self) -> Vec<String>;
+    fn print(&self);
+    fn find_weakly_connected_nodes(&self) -> Vec<String>;
+    fn weakly_connected_dfs(&self, v: graph::NodeIndex, depth: u8, visited: &mut HashMap<graph::NodeIndex, u8>, found: &mut Vec<String>, parent: Option<graph::NodeIndex>) -> (u8, Vec<String>);
+}
+impl GraphExt for UnGraph<String, u32> {
+    fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
+        self.node_indices().find(|i| self[*i] == name)
+    }
+    fn has_node(&self, name: &str) -> bool {
+        self.node_indices().any(|i| self[i] == name)
+    }
+    fn drop_detached_nodes(&mut self) -> Vec<String> {
+        let mynode = graph::NodeIndex::new(0);
+        let scc = petgraph::algo::kosaraju_scc(&*self);
+        let mut dropped: Vec<String> = vec![];
+        let mut retain: Vec<graph::NodeIndex> = vec![];
+        for group in scc {
+            if group.contains(&mynode) {
+                retain.extend_from_slice(&group);
+                continue;
+            }
+            for nodeidx in group {
+                dropped.push(self[nodeidx].clone());
+            }
+        }
+        if !retain.is_empty() { self.retain_nodes(|_, nodeidx| retain.contains(&nodeidx)); }
+        dropped
+    }
+    fn print(&self) {
+        for edge in self.raw_edges().iter() {
+            println!("Edge: {} -> {} ({})", self[edge.source()], self[edge.target()], edge.weight);
+        }
+    }
+
+    fn find_weakly_connected_nodes(&self) -> Vec<String> {
+        let mut visited: HashMap<graph::NodeIndex, u8> = HashMap::new();
+        let mut found: Vec<String> = vec![];
+
+        self.weakly_connected_dfs(graph::NodeIndex::new(0), 0, &mut visited, &mut found, None);
+        found
+    }
+    fn weakly_connected_dfs(&self, v: graph::NodeIndex, mut depth: u8, visited: &mut HashMap<graph::NodeIndex, u8>, found: &mut Vec<String>, parent: Option<graph::NodeIndex>) -> (u8, Vec<String>) {
+        let mut children: Vec<String> = vec![];
+        if let Some(parent) = parent {
+            if parent.index() != 0 {
+                // if self.contains_edge(graph::NodeIndex::new(0), v) { return (0, children); } // Is this needed?
+                children.push(self[v].clone());
+            }
+        }
+        depth += 1;
+        // println!("Processing {} with depth {}", &self[v], depth);
+        visited.insert(v, depth);
+        let mut low = depth;
+
+        for to in self.neighbors(v) {
+            if Some(to) == parent { continue; }
+            if let Some(other) = visited.get(&to) {
+                if *other < low { low = *other; }
+            }
+            else {
+                let (lowest, mut names) = self.weakly_connected_dfs(to, depth, visited, found, Some(v));
+                if v.index() == 0 { continue; }
+                if lowest >= depth {
+                    println!("Node {} is cut vertex for {}", &self[v], names.join(", "));
+                    found.append(&mut names);
+                }
+                else if lowest < low { low = lowest; }
+                children.append(&mut names);
+            }
+        }
+        // println!("Finished   {} with depth {} low {}", &self[v], depth, low);
+        (low, children)
+    }
+}
 
 #[derive(Eq)]
 struct PingResult {

@@ -2,8 +2,7 @@ use crypto_box::{ PublicKey, SalsaBox};
 use rmp_serde::decode::Error as DecodeError;
 use std::{ time, time::{ Duration, Instant }, default::Default, sync::RwLock, sync::Arc, convert::TryInto };
 use tokio::{ net, sync, time::timeout, io::AsyncReadExt, io::AsyncWriteExt};
-// use petgraph::graph;
-use crate::{ Config, Node, Connection, ConnState, Control, Protocol, GraphExt, encrypt_frame, decrypt_frame };
+use crate::{ Config, Node, Connection, ConnState, Control, Protocol, encrypt_frame, decrypt_frame };
 
 pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool, learn: bool) {
     let (tx, mut ctrlrx) = sync::mpsc::channel(10);
@@ -185,7 +184,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             if conn.state == ConnState::Encrypted {
                                 let runtime = config.runtime.read().unwrap();
                                 if active {
-                                    if !runtime.graph.has_node(&conn.nodename) {
+                                    if !runtime.graph.node_indices().any(|i| runtime.graph[i] == conn.nodename) {
                                         for edge in runtime.graph.raw_edges() {
                                             frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), seq: edge.weight }));
                                         }
@@ -258,7 +257,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             if !active {
                                 let config = config.read().unwrap();
                                 let runtime = config.runtime.read().unwrap();
-                                if !runtime.graph.has_node(&conn.nodename) {
+                                if !runtime.graph.node_indices().any(|i| runtime.graph[i] == conn.nodename) {
                                     for edge in runtime.graph.raw_edges() {
                                         frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), seq: edge.weight }));
                                     }
