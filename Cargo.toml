@@ -17,7 +17,7 @@ byteorder = "1"
 sysinfo = "0.26"
 generic-array = "0.14"
 petgraph = "0.6"
-clap = "3"
+clap = "4"
 pnet = "0"
 warp = { version = "0.3", features = ["default", "tls"] }
 lazy_static = "1"

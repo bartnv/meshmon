@@ -5,7 +5,7 @@ use serde_derive::{ Deserialize, Serialize };
 use tokio::{ fs, net, sync };
 use sysinfo::{ SystemExt };
 use petgraph::graph::UnGraph;
-use clap::{ Command, Arg };
+use clap::{ Command, Arg, ArgAction };
 use pnet::datalink::interfaces;
 use generic_array::GenericArray;
 use chrono::offset::Local;
@@ -142,19 +142,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .arg_required_else_help(true)
         .subcommand(Command::new("init")
             .about("Create a new configuration file and exit")
-            .arg(Arg::new("name").short('n').long("name").takes_value(true).help("The name for this node"))
+            .arg(Arg::new("name").short('n').long("name").help("The name for this node").default_value("MyName"))
         )
         .subcommand(Command::new("run")
             .about("Run the monitor")
-            .arg(Arg::new("acceptnewnodes").short('a').long("accept").help("Auto-accept new nodes"))
-            .arg(
-                Arg::new("connect").short('c').long("connect").help("Connect to this <address:port>")
-                    .multiple_occurrences(true).takes_value(true).number_of_values(1)
-            )
-            .arg(Arg::new("web").short('w').long("web").takes_value(true).help("Start HTTP server on this <address:port>"))
-            .arg(Arg::new("tui").short('t').long("tui").help("Activate the interactive terminal user-interface"))
-            .arg(Arg::new("results").long("results").help("Log individual ping results"))
-            .arg(Arg::new("debug").long("debug").help("Verbose logging").conflicts_with("tui"))
+            .arg(Arg::new("acceptnewnodes").short('a').long("accept").action(ArgAction::SetTrue).help("Auto-accept new nodes"))
+            .arg(Arg::new("connect").short('c').long("connect").action(ArgAction::Append).help("Connect to this <address:port>"))
+            .arg(Arg::new("web").short('w').long("web").help("Start HTTP server on this <address:port>"))
+            .arg(Arg::new("tui").short('t').long("tui").action(ArgAction::SetTrue).help("Activate the interactive terminal user-interface"))
+            .arg(Arg::new("results").long("results").action(ArgAction::SetTrue).help("Log individual ping results"))
+            .arg(Arg::new("debug").long("debug").action(ArgAction::SetTrue).help("Verbose logging").conflicts_with("tui"))
         );
     let args = app.get_matches();
     let config: Arc<RwLock<Config>>;
@@ -163,7 +160,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let privkey = base64::encode(SecretKey::generate(&mut rng).as_bytes());
         config = Arc::new(RwLock::new(
             Config {
-                name: args.value_of("name").unwrap_or("MyName").to_string(),
+                name: args.get_one::<&str>("name").unwrap().to_string(),
                 listen: vec!["[::]:7531".to_owned()],
                 privkey,
                 nodes: Vec::new(),
@@ -192,10 +189,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.listen = get_local_interfaces(&config.listen);
         runtime.privkey = Some(rawkey.into());
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key());
-        runtime.acceptnewnodes = args.is_present("acceptnewnodes");
-        runtime.tui = args.is_present("tui");
-        runtime.results = args.is_present("results");
-        runtime.debug = args.is_present("debug");
+        runtime.acceptnewnodes = args.get_one::<bool>("acceptnewnodes").copied().unwrap();
+        runtime.tui = args.get_one::<bool>("tui").copied().unwrap();
+        runtime.results = args.get_one::<bool>("results").copied().unwrap();
+        runtime.debug = args.get_one::<bool>("debug").copied().unwrap();
         runtime.sysinfo = Some(sysinfo::System::new_all());
         runtime.sysinfo.as_mut().unwrap().refresh_all();
         runtime.graph.add_node(config.name.clone());
@@ -204,7 +201,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Pass the SocketAddr for the http server to the control task if the --web argument is passed
-    let web: Option<std::net::SocketAddr> = match args.value_of("web") {
+    let web: Option<std::net::SocketAddr> = match args.get_one::<String>("web") {
         None => None,
         Some(port) => {
             println!("Starting http server on {}", port);
@@ -247,7 +244,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Connect to the nodes passed in --connect arguments
-    if let Some(params) = args.values_of("connect") {
+    if let Some(params) = args.get_many::<&str>("connect") {
         for port in params {
             let ports = vec![port.to_string()];
             let config = config.clone();
