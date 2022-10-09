@@ -189,10 +189,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.listen = get_local_interfaces(&config.listen);
         runtime.privkey = Some(rawkey.into());
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key());
-        runtime.acceptnewnodes = args.get_one::<bool>("acceptnewnodes").copied().unwrap();
-        runtime.tui = args.get_one::<bool>("tui").copied().unwrap();
-        runtime.results = args.get_one::<bool>("results").copied().unwrap();
-        runtime.debug = args.get_one::<bool>("debug").copied().unwrap();
+        runtime.acceptnewnodes = args.get_flag("acceptnewnodes");
+        runtime.tui = args.get_flag("tui");
+        runtime.results = args.get_flag("results");
+        runtime.debug = args.get_flag("debug");
         runtime.sysinfo = Some(sysinfo::System::new_all());
         runtime.sysinfo.as_mut().unwrap().refresh_all();
         runtime.graph.add_node(config.name.clone());
