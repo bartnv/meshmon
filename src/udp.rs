@@ -281,6 +281,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             }
                         };
 
+                        if sa.port() != port.port {
+                            if debug { println!("Node {} ip {} moved from port {} to {}", name, remoteip, port.port, sa.port()); }
+                            port.port = sa.port();
+                        }
+
                         match result.unwrap() {
                             Protocol::Ping { value } => {
                                 let frame = build_frame(&node.sbox, Protocol::Pong { value });
