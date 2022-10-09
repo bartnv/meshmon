@@ -11,17 +11,17 @@ base64 = "0.13"
 serde = "1"
 serde_derive = "1"
 rmp-serde = "1"
-crypto_box = "0.7"
+crypto_box = "0.8"
 rand = "0.8"
 byteorder = "1"
-sysinfo = "0.23"
+sysinfo = "0.26"
 generic-array = "0.14"
 petgraph = "0.6"
 clap = "3"
 pnet = "0"
 warp = { version = "0.3", features = ["default", "tls"] }
 lazy_static = "1"
-tui = { version = "0.17", default-features = false, features = ['termion'] }
+tui = { version = "0.19", default-features = false, features = ['termion'] }
 termion = "1"
 chrono = "0.4"
 

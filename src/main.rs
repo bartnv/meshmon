@@ -1,5 +1,5 @@
 // #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use crypto_box::{ aead::Aead, PublicKey, SecretKey, SalsaBox};
+use crypto_box::{ aead::Aead, aead::AeadCore, PublicKey, SecretKey, SalsaBox};
 use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto };
 use serde_derive::{ Deserialize, Serialize };
 use tokio::{ fs, net, sync };
@@ -309,7 +309,7 @@ fn get_local_interfaces(listen: &[String]) -> Vec<String> {
 
 pub fn encrypt_frame(sbox: &SalsaBox, plaintext: &[u8]) -> Vec<u8> {
     let mut rng = rand::rngs::OsRng;
-    let nonce = crypto_box::generate_nonce(&mut rng);
+    let nonce = SalsaBox::generate_nonce(&mut rng);
     let mut payload: Vec<u8> = vec![];
     payload.extend_from_slice(nonce.as_slice());
     payload.extend_from_slice(&sbox.encrypt(&nonce, plaintext).unwrap());

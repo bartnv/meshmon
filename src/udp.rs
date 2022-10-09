@@ -250,8 +250,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let node = res.unwrap();
                         let frame = match decrypt_frame(&node.sbox, &frame) {
                             Ok(plaintext) => plaintext,
-                            Err(e) => {
-                                eprintln!("Failed to decrypt UDP frame from {}: {:?}", remote, e);
+                            Err(_) => { // SalsaBox errors are deliberately opaque to prevent information leakage
+                                eprintln!("Failed to decrypt UDP frame from node {} ({})", name, remote);
                                 continue;
                             }
                         };
