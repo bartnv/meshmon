@@ -403,29 +403,29 @@ async fn check_loss(ctrltx: &tokio::sync::mpsc::Sender<Control>, nodes: &mut Has
     for (name, node) in nodes.iter_mut() {
         for port in node.ports.iter_mut() {
             if port.losspct != 0.0 {
-                let pct = port.losspct;
-                check_loss_port(port);
-                if port.losspct == 0.0 {
-                    ctrltx.send(Control::Update(format!("{} {} has recovered from packet loss", name, port.label))).await.unwrap();
-                }
-                else if (port.losspct - pct).abs() > f32::EPSILON {
+                if check_loss_port(port) {
                     ctrltx.send(Control::Update(format!("{} {} is suffering {:.0}% packet loss", name, port.label, port.losspct))).await.unwrap();
                 }
             }
         }
     }
 }
-fn check_loss_port(port: &mut PingPort) {
-    let mut count = 0;
-    for x in &port.hist {
-        if *x == 0 { count += 1; }
+fn check_loss_port(port: &mut PingPort) -> bool {
+    let mut report = false;
+    let mut losses = 0;
+    for (i, x) in port.hist.iter().enumerate() {
+        if *x == 0 {
+            losses += 1;
+            if report == false && i < 15 { report = true; }
+        }
     }
-    if count > 0 {
-        port.losspct = (count as f32/port.hist.len() as f32)*100.0;
+    if losses > 0 {
+        port.losspct = (losses as f32/port.hist.len() as f32)*100.0;
     }
     else {
         port.losspct = 0.0;
     }
+    report
 }
 
 fn isprivate(ip: std::net::IpAddr) -> bool {
