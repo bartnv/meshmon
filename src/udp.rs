@@ -7,7 +7,7 @@ use pnet::{ datalink::interfaces, ipnetwork::IpNetwork, ipnetwork::Ipv6Network }
 use lazy_static::lazy_static;
 use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame };
 
-static PINGFREQ: u8 = 60;
+static PINGFREQ: u8 = 30;
 static SPREAD: u8 = 6;
 static HISTSIZE: usize = 100;
 
