@@ -3,7 +3,8 @@ use crypto_box::{ PublicKey, SalsaBox};
 use serde_derive::{ Deserialize, Serialize };
 use rmp_serde::decode::Error as DecodeError;
 use tokio::{ net, sync };
-use pnet::{ datalink::interfaces, ipnetwork::IpNetwork, ipnetwork::Ipv6Network };
+use ipnetwork::{ IpNetwork, Ipv6Network };
+use pnet_datalink::interfaces;
 use lazy_static::lazy_static;
 use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame };
 

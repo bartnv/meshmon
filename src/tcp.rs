@@ -91,7 +91,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                         }
                     }
-                    let result: Result<Protocol, DecodeError> = rmp_serde::from_read_ref(&frame);
+                    let result: Result<Protocol, DecodeError> = rmp_serde::from_slice(&frame);
                     if let Err(ref e) = result {
                         if debug { eprintln!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename); }
                         break 'select;

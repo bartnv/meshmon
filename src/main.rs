@@ -6,7 +6,7 @@ use tokio::{ fs, net, sync };
 use sysinfo::{ SystemExt };
 use petgraph::graph::UnGraph;
 use clap::{ Command, Arg, ArgAction };
-use pnet::datalink::interfaces;
+use pnet_datalink::interfaces;
 use generic_array::GenericArray;
 use chrono::offset::Local;
 
