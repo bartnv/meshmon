@@ -1,11 +1,12 @@
 use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque }, cmp::Ordering };
 use tokio::{ fs, sync };
+use futures_util::{ FutureExt, stream::StreamExt };
 use petgraph::{ graph, graph::UnGraph, dot, data::FromElements, algo };
 use termion::{ raw::IntoRawMode, screen::AlternateScreen };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use warp::Filter;
+use warp::{ Filter, ws::Message };
 use serde_derive::Serialize;
 use crate::{ Config, Node, Control, Protocol, unixtime, timestamp };
 
@@ -177,13 +178,12 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         let config = aconfig.clone();
         tokio::spawn(async move {
             let index = warp::path::end().map(|| warp::reply::html(INDEX_FILE));
-            let rpc = warp::path("rpc")
-                       .and(warp::post())
-                       .and(warp::body::form())
+            let websocket = warp::path("ws")
+                       .and(warp::ws())
                        .and(warp::any().map(move || config.clone()))
-                       .map(http_rpc)
+                       .and_then(upgrade_websocket)
                        .with(warp::cors().allow_any_origin());
-            warp::serve(index.or(rpc)).run(sa).await;
+            warp::serve(index.or(websocket)).run(sa).await;
         });
     }
 
@@ -702,10 +702,15 @@ fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
     return Span::styled("^", (*STYLES.last().unwrap()).fg(Color::Black));
 }
 
-fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp::reply::Json {
+async fn upgrade_websocket(ws: warp::ws::Ws, config: Arc<RwLock<Config>>) -> Result<impl warp::Reply, warp::Rejection> {
+    println!("Accepted websocket request");
+    Ok(ws.on_upgrade(move |socket| handle_websocket(socket, config)))
+}
+
+async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>) {
     #[derive(Default, Serialize)]
     struct JsonGraph {
-        error: Option<String>,
+        msg: &'static str,
         nodes: Vec<JsonNode>,
         edges: Vec<JsonEdge>,
         log: Vec<(u64, String)>
@@ -722,36 +727,44 @@ fn http_rpc(form: HashMap<String, String>, config: Arc<RwLock<Config>>) -> warp:
         color: &'static str
     }
 
-    let mut res: JsonGraph = Default::default();
-    if let Some(req) = form.get("req") {
-        match req.as_str() {
-            "update" => {
-                let config = config.read().unwrap();
-                let runtime = config.runtime.read().unwrap();
-                let nodes = runtime.graph.raw_nodes();
-                for (i, node) in nodes.iter().enumerate() {
-                    res.nodes.push(JsonNode { id: i, label: node.weight.clone() });
-                }
-                for edge in runtime.graph.raw_edges() {
-                    let color = match runtime.msp.contains_edge(edge.source(), edge.target()) {
-                        true => "rgb(0, 255, 0)",
-                        false => "rgb(100,100,100)"
-                    };
-                    res.edges.push(JsonEdge { from: edge.source().index(), to: edge.target().index(), color });
-                }
-                if let Some(since) = form.get("since") {
-                    let since: u64 = since.parse().unwrap_or(0);
-                    for (ts, msg) in &runtime.log {
-                        if *ts <= since { continue; }
-                        res.log.push((*ts, msg.clone()));
-                    }
-                }
-            },
-            _ => {
-                res.error = Some("Invalid request".to_string());
-            }
+    println!("Upgraded websocket request");
+    let (ws_tx, mut ws_rx) = ws.split();
+    let (tx, rx) = sync::mpsc::unbounded_channel();
+    let rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    tokio::task::spawn(rx.forward(ws_tx).map(|result| {
+        if let Err(e) = result { println!("Error sending websocket message: {}", e); }
+    }));
+
+    {
+        let config = config.read().unwrap();
+        let mut runtime = config.runtime.write().unwrap();
+        runtime.wsclients.push(tx.clone());
+        let mut res = JsonGraph { msg: "init", ..Default::default() };
+        let nodes = runtime.graph.raw_nodes();
+        for (i, node) in nodes.iter().enumerate() {
+            res.nodes.push(JsonNode { id: i, label: node.weight.clone() });
         }
+        for edge in runtime.graph.raw_edges() {
+            let color = match runtime.msp.contains_edge(edge.source(), edge.target()) {
+                true => "rgb(0, 255, 0)",
+                false => "rgb(100,100,100)"
+            };
+            res.edges.push(JsonEdge { from: edge.source().index(), to: edge.target().index(), color });
+        }
+        for (ts, msg) in &runtime.log {
+            res.log.push((*ts, msg.clone()));
+        }
+        tx.send(Ok(Message::text(serde_json::to_string(&res).unwrap()))).expect("Failed to send network graph to websocket");
     }
-    else { res.error = Some("No req parameter in POST".to_string()); }
-    warp::reply::json(&res)
+
+    while let Some(result) = ws_rx.next().await {
+        let msg = match result {
+            Ok(msg) => msg,
+            Err(e) => {
+                println!("Error receiving websocket message: {}", e);
+                break;
+            }
+        };
+        println!("Received websocket message: {:?}", msg);
+    }
 }

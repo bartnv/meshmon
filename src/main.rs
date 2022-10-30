@@ -47,6 +47,7 @@ struct Runtime {
     sysinfo: Option<sysinfo::System>,
     graph: UnGraph<String, u32>,
     msp: UnGraph<String, u32>,
+    wsclients: Vec<sync::mpsc::UnboundedSender<Result<warp::ws::Message, warp::Error>>>,
     connseq: u32,
     acceptnewnodes: bool,
     tui: bool,
