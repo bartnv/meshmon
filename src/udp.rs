@@ -13,7 +13,7 @@ static HISTSIZE: usize = 100;
 
 #[derive(Debug)]
 enum UdpControl {
-    Frame(String, String, SocketAddr, Vec<u8>) // Node name, local port, remote port, encrypted frame
+    Frame(String, SocketAddr, SocketAddr, Vec<u8>) // Node name, local port, remote port, encrypted frame
 }
 #[derive(Serialize, Deserialize)]
 enum UdpProto {
@@ -121,11 +121,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                 println!("Started UDP listener on {}", port);
                 let sock = Arc::new(sock);
                 let sa: SocketAddr = port.parse().unwrap();
-                let ip = sa.ip();
-                socks.insert(ip.to_string(), sock.clone());
+                socks.insert(sa.ip().to_string(), sock.clone());
                 let readtx = readtx.clone();
                 tokio::spawn(async move {
-                    udpreader(port, sock, readtx).await;
+                    udpreader(sa, sock, readtx).await;
                 });
             },
             Err(e) => {
@@ -255,21 +254,20 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 continue;
                             }
                         };
-                        let result: Result<Protocol, DecodeError> = rmp_serde::from_read_ref(&frame);
+                        let result: Result<Protocol, DecodeError> = rmp_serde::from_slice(&frame);
                         if let Err(ref e) = result {
                             eprintln!("Deserialization error in UDP frame from {}: {:?}", remote, e);
                             continue;
                         }
 
-                        let sa: SocketAddr = local.parse().unwrap();
-                        let res = socks.get(&sa.ip().to_string());
+                        let res = socks.get(&local.ip().to_string());
                         if res.is_none() {
                             eprintln!("Failed to find local UDP socket for port {}", local);
                             continue;
                         }
                         let sock = res.unwrap();
 
-                        let route = sa.ip().to_string();
+                        let route = local.ip().to_string();
                         let remoteip = remote.ip().to_string();
                         let res = node.ports.iter_mut().find(|p| p.ip == remoteip && p.route == route);
                         let mut port = match res {
@@ -281,16 +279,16 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             }
                         };
 
-                        if sa.port() != port.port {
-                            if debug { println!("Node {} ip {} moved from port {} to {}", name, remoteip, port.port, sa.port()); }
-                            port.port = sa.port();
+                        if remote.port() != port.port {
+                            if debug { println!("Node {} ip {} moved from port {} to {}", name, remoteip, port.port, remote.port()); }
+                            port.port = remote.port();
                         }
 
                         match result.unwrap() {
                             Protocol::Ping { value } => {
                                 let frame = build_frame(&node.sbox, Protocol::Pong { value });
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
-                                    eprintln!("Failed to send UDP packet to {} via {}: {}", remote, sa.ip(), e);
+                                    eprintln!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e);
                                 }
                                 if !port.usable || port.state > PortState::Loss(0) {
                                     if !send_ping(&socks, &node.sbox, port, &port.route).await && debug {
@@ -308,7 +306,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if port.waiting { // Probe pings don't have waiting set
                                     port.waiting = false;
                                     port.push_hist(rtt);
-                                    ctrltx.send(Control::Result(name.clone(), sa.ip().to_string(), port.ip.clone(), rtt)).await.unwrap();
+                                    ctrltx.send(Control::Result(name.clone(), local.ip().to_string(), port.ip.clone(), rtt)).await.unwrap();
                                 }
                                 match port.state {
                                     PortState::New => { port.state = PortState::Init(1); },
@@ -372,7 +370,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     }
 }
 
-async fn udpreader(port: String, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::Sender<UdpControl>) {
+async fn udpreader(port: SocketAddr, sock: Arc<net::UdpSocket>, readtx: sync::mpsc::Sender<UdpControl>) {
     let mut buf = [0; 1500];
     loop {
         match sock.recv_from(&mut buf).await {
