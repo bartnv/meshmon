@@ -1,51 +1,135 @@
 <!doctype html>
 <html>
 <head>
-<script src="https://unpkg.com/jquery/dist/jquery.min.js"></script>
-<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jquery@3.6.1/dist/jquery.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
 <script>
   'use strict';
+
+  let app = {
+    nodes: {},
+    edges: [],
+    pairs: {}
+  };
+
   $().ready(function() {
-    window.graph = new vis.Network($('#graph')[0], {},
-      {
-        layout: { randomSeed: '0.4362377321956592:1623528045167' },
-        nodes: { shape: "dot", size: 16 },
-        edges: { smooth: { type: "continuous", forceDirection: "none", roundness: 0 }, physics: false }
-      }
-    );
-    let radius = 250;
-    graph.on('initRedraw', function () {
-      let ids = window.nodes.getIds()
-      let d = 2 * Math.PI / ids.length // Angular pitch
-      ids.forEach(function(id, i) {
-        let x = radius * Math.cos(d * i);
-        let y = radius * Math.sin(d * i);
-        graph.moveNode(id, x, y);
-      })
-    });
-    window.lastupdate = 0;
-    getGraph();
-    setInterval(getGraph, 15000);
+    setupWebsocket();
+    setInterval(function() { if (!socket || socket.readyState == 3) setupWebsocket(); }, 30000);
   });
-  function getGraph() {
-    jQuery.post('/rpc', { req: 'update', since: lastupdate }, renderGraph, 'json');
+  function setupWebsocket() {
+    window.socket = new WebSocket('ws://hs1.mmvi.nl:8041/ws');
+    socket.onopen = function () {
+      setStatus('Connected', 'white', 'green');
+    };
+    socket.onmessage = function(event) {
+      const data = JSON.parse(event.data);
+      console.log('Received ' + data.msg + ' message', data);
+      switch (data.msg) {
+        case 'init':
+          renderGraph(data);
+          break;
+        case 'log':
+          addLogMsg([ data.ts, data.text ]);
+          break;
+        case 'newlink':
+          addEdge(data);
+          break;
+        case 'droplink':
+          removeEdge(data);
+          break;
+        case 'loss':
+          renderPath(data);
+          break;
+      }
+    };
+    socket.onclose = function(event) {
+      console.log('close', event);
+      setStatus('Disconnected', 'black', 'red');
+    };
+    socket.onerror = function(event) {
+      console.log('error', event);
+      setStatus('Error: ' + event.data, 'white', 'orange');
+    };
   }
   function renderGraph(data) {
-    window.nodes = new vis.DataSet(data.nodes);
-    window.edges = new vis.DataSet(data.edges);
-    graph.setData({ nodes: nodes, edges: edges });
-    for (let entry of data.log) {
-      let ts = parseInt(entry[0]);
-      if (ts > lastupdate) lastupdate = ts;
-      let date = new Date(ts * 1000);
-      $('#log').append(date.toISOString().substring(0, 16).replace('T', ' ') + ' ' + entry[1] + '<br>');
+    if (!data.nodes?.[0]?.name) return;
+    $('#graph').empty();
+    window.graph = SVG().addTo('#graph').size('100%', '100%').viewbox(-1000, -1000, 2000, 2000);
+    let radius = 750;
+    let d = 2 * Math.PI / data.nodes.length; // Radians between nodes
+    for (let i in data.nodes) {
+      let x = Math.round(radius * Math.sin(d * i));
+      let y = Math.round(-(radius * Math.cos(d * i)));
+      data.nodes[i].el = graph.circle(50).cx(x).cy(y).fill('white');
+      graph.plain(data.nodes[i].name).fill('white').font({ size: 30 }).cx(x * 1.15).cy(y * 1.075);
+      app.nodes[data.nodes[i].name] = data.nodes[i];
     }
+    for (let edge of data.edges) addEdge(edge);
+    for (let path of data.paths) renderPath(path);
+    SVG.find('circle').front();
+    $('#log').empty();
+    for (let entry of data.log) { addLogMsg(entry); }
     if (data.log.length) $('#log').prop('scrollTop', $('#log').height());
+  }
+  function addEdge(edge) {
+    let from = app.nodes[edge.from];
+    let to = app.nodes[edge.to];
+    edge.el = graph.line(from.el.cx(), from.el.cy(), to.el.cx(), to.el.cy()).stroke('red').attr('stroke-width', 3);
+    app.edges.push(edge);
+  }
+  function removeEdge(edge) {
+    app.edges = app.edges.filter(function(entry) {
+      if ((entry.from == edge.from) && (entry.to == edge.to) ||
+          (entry.from == edge.to) && (entry.to == edge.from)) {
+        entry.el.remove();
+        return false;
+      }
+      return true;
+    });
+  }
+  function renderPath(data) {
+    let pair = data.fromname<data.toname?data.fromname + '-' + data.toname:data.toname + '-' + data.fromname;
+    let path = data.fromname<data.toname?data.fromintf + '-' + data.tointf:data.tointf + '-' + data.fromintf;
+    if (!app.pairs[pair]) {
+      app.pairs[pair] = { count: 1, paths: {}, link: false };
+      if (app.edges.find((entry) => {
+        if ((entry.from == data.fromname) && (entry.to == data.toname) ||
+            (entry.from == data.toname) && (entry.to == data.fromname)) return true;
+        return false;
+      })) app.pairs[pair].link = true;
+    }
+    else app.pairs[pair].count += 1;
+    if (!app.pairs[pair].paths[path]) {
+      app.pairs[pair].paths[path] = { losspct: data.losspct };
+      let from = app.nodes[data.fromname].el;
+      let to = app.nodes[data.toname].el;
+      let offset = app.pairs[pair].count;
+      if (!app.pairs[pair].link) offset -= 1;
+      if (offset%2 == 0) offset = -offset;
+      else offset += 1;
+      offset *= 3;
+      let radians = Math.atan((from.cy()-to.cy())/(from.cx()-to.cx()))+0.5*Math.PI;
+      let offsetx = offset*Math.cos(radians);
+      let offsety = offset*Math.sin(radians);
+      app.pairs[pair].paths[path].el = graph.line(from.cx()+offsetx, from.cy()+offsety, to.cx()+offsetx, to.cy()+offsety).fill('none').attr('stroke-width', 3);
+      if (data.fromintf.startsWith('10.')) app.pairs[pair].paths[path].el.stroke('orange');
+      else if (data.fromintf.includes(':')) app.pairs[pair].paths[path].el.stroke('#9090ff');
+      else app.pairs[pair].paths[path].el.stroke('#00c000');
+    }
+    else app.pairs[pair].paths[path].losspct = data.losspct;
+  }
+  function addLogMsg(entry) {
+    let ts = parseInt(entry[0]);
+    let date = new Date(ts * 1000);
+    $('#log').append(date.toISOString().substring(0, 16).replace('T', ' ') + ' ' + entry[1] + '<br>');
+  }
+  function setStatus(text, fg, bg) {
+    $('#status').text(text).css({ color: fg, backgroundColor: bg });
   }
 </script>
 <style>
 *, *:before, *:after { box-sizing: border-box; }
-BODY { margin: 0; }
+BODY { margin: 0; background-color: black; color: white; }
 #graph {
   width: 100vw;
   height: 80vh;
@@ -56,10 +140,12 @@ BODY { margin: 0; }
   border-top: solid grey 1px;
   overflow: auto;
 }
+#status { position: absolute; top: 1rem; left: 1rem; padding: 0.5rem; border-radius: 0.5rem; }
 </style>
 </head>
 <body>
 <div id="graph"></div>
 <div id="log"></div>
+<div id="status"></div>
 </body>
 </html>
