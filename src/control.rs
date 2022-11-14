@@ -376,8 +376,18 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         true
                     }
                 };
-                if changes { relaymsgs.push((sender, Protocol::Link { from, to, seq }, true)); };
-                runtime.msp = calculate_msp(&runtime.graph);
+                if changes {
+                    relaymsgs.push((sender, Protocol::Link { from: from.clone(), to: to.clone(), seq }, true));
+                    runtime.msp = calculate_msp(&runtime.graph);
+                    if !runtime.wsclients.is_empty() {
+                        let mode = match runtime.msp.contains_edge(fromidx, toidx) {
+                            true => "active",
+                            false => "standby"
+                        };
+                        let json = format!("{{ \"msg\": \"newlink\", \"from\": \"{from}\", \"to\": \"{to}\", \"mode\": \"{mode}\" }}");
+                        runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                    }
+                };
             },
             Control::DropLink(sender, from, to) => {
                 let mut config = aconfig.write().unwrap();
@@ -401,6 +411,12 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         }
                         runtime.msp = calculate_msp(&runtime.graph);
                         relaymsgs.push((sender, Protocol::Drop { from, to }, true));
+                    }
+                    if !runtime.wsclients.is_empty() {
+                        let from = runtime.graph[fnode].clone();
+                        let to = runtime.graph[tnode].clone();
+                        let json = format!("{{ \"msg\": \"droplink\", \"from\": \"{from}\", \"to\": \"{to}\" }}");
+                        runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
                     }
                     drop(runtime);
                     config.nodes.iter_mut().for_each(|node| { if dropped.contains(&node.name) { node.lastconnseq = 0; } });
@@ -504,10 +520,14 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if term.is_none() { println!("{}", &text); }
                 let config = aconfig.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
-                runtime.log.push((unixtime(), text));
+                runtime.log.push((unixtime(), text.clone()));
                 if runtime.log.len() > 25 {
                     let drain = runtime.log.len()-25;
                     runtime.log.drain(0..drain);
+                }
+                if !runtime.wsclients.is_empty() {
+                    let json = format!("{{ \"msg\": \"log\", \"ts\": {}, \"text\": \"{}\" }}", unixtime(), &text);
+                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
                 }
                 redraw = true;
             },
