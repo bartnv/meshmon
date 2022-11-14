@@ -93,18 +93,18 @@ impl GraphExt for UnGraph<String, u32> {
     }
 }
 
-#[derive(Eq)]
 struct PingResult {
     node: String,
     intf: String,
     port: String,
     min: u16,
+    losspct: f32,
     last: Option<u16>,
     hist: VecDeque<u16>,
 }
 impl PingResult {
     fn new(node: String, intf: String, port: String) -> PingResult {
-        PingResult { node, intf, port, min: u16::MAX, last: None, hist: VecDeque::with_capacity(HISTSIZE) }
+        PingResult { node, intf, port, min: u16::MAX, losspct: 0.0, last: None, hist: VecDeque::with_capacity(HISTSIZE) }
     }
     fn push_hist(&mut self, result: u16) {
         if self.hist.len() >= HISTSIZE { self.hist.pop_back().unwrap(); }
@@ -124,6 +124,7 @@ impl Ord for PingResult {
         }
     }
 }
+impl Eq for PingResult {}
 impl PartialOrd for PingResult {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -275,7 +276,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     config.modified = false;
                 }
             },
-            Control::Round => {
+            Control::Round(round) => {
+                // Update interface stats
                 for i in data.intf.write().unwrap().values_mut() { i.lag = u16::MAX; }
                 for result in data.results.read().unwrap().iter() {
                     if result.last.is_none() { continue; }
@@ -289,14 +291,31 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             .or_insert_with(|| IntfStats { symbol: char::from_u32({ lastsymbol += 1; lastsymbol }).unwrap_or('?'), min: last, lag: last-result.min });
                     }
                 }
+                redraw = true;
+
+                // Update port history
                 for result in data.results.write().unwrap().iter_mut() {
                     if let Some(last) = result.last {
                         result.push_hist(last);
                         result.last = None;
+                        if last == 0 && result.losspct == 0.0 {
+                            check_loss_port(result);
+                            println!("{} {} is suffering {}% packet loss", &result.node, &result.port, result.losspct);
+                            let config = aconfig.read().unwrap();
+                            let mut runtime = config.runtime.write().unwrap();
+                            if !runtime.wsclients.is_empty() {
+                                let json = format!("{{ \"msg\": \"loss\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
+                                    \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
+                                    &myname, &result.intf, &result.node, &result.port, result.losspct.round()
+                                );
+                                runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                            }
+                        }
                     }
                     else { result.push_hist(u16::MAX); }
                 }
-                redraw = true;
+
+                if round%10 == 0 { check_loss(&aconfig, &data.results); }
             },
             Control::NewLink(sender, from, to, seq) => {
                 let mut config = aconfig.write().unwrap();
@@ -588,6 +607,43 @@ fn find_next_node(nodes: &[Node], start: usize) -> Option<usize> {
 fn calculate_msp(graph: &UnGraph<String, u32>) -> UnGraph<String, u32> {
     // The resulting graph will have all nodes of the input graph with identical indices
     graph::Graph::from_elements(algo::min_spanning_tree(&graph))
+}
+
+fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) {
+    for mut result in results.write().unwrap().iter_mut() {
+        if result.losspct != 0.0 {
+            let prev = result.losspct.round();
+            check_loss_port(&mut result);
+            if result.losspct.round() != prev {
+                println!("{} {} is suffering {}% packet loss", result.node, result.port, result.losspct);
+                let config = config.read().unwrap();
+                let mut runtime = config.runtime.write().unwrap();
+                if !runtime.wsclients.is_empty() {
+                    let json = format!("{{ \"msg\": \"loss\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
+                        \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
+                        &config.name, &result.intf, &result.node, &result.port, result.losspct.round()
+                    );
+                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                }
+            }
+        }
+    }
+}
+fn check_loss_port(result: &mut PingResult) {
+    let mut count = 0;
+    let mut losses = 0;
+    for x in &result.hist {
+        if *x == u16::MAX { continue; }
+        count += 1;
+        if *x == 0 { losses += 1; }
+        if count >= 100 { break; }
+    }
+    if losses > 0 {
+        result.losspct = (losses as f32/count as f32)*100.0;
+    }
+    else {
+        result.losspct = 0.0;
+    }
 }
 
 fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {

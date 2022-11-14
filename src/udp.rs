@@ -58,7 +58,6 @@ struct PingPort {
     waiting: bool,
     sent: u32,
     minrtt: u16,
-    losspct: f32,
     state: PortState,
     hist: VecDeque<u16>,
 }
@@ -78,7 +77,6 @@ impl PingPort {
             waiting: false,
             sent: 0,
             minrtt: u16::MAX,
-            losspct: 0.0,
             state: PortState::New,
             hist: VecDeque::with_capacity(HISTSIZE),
         }
@@ -140,7 +138,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
         tokio::select!{
             _ = interval.tick() => {
                 let round = (tick%SPREAD as u64) as u8;
-                if round == 0 { ctrltx.send(Control::Round).await.unwrap(); }
+                if round == 0 { ctrltx.send(Control::Round(tick/SPREAD as u64)).await.unwrap(); }
                 for (name, node) in nodes.iter_mut() {
                     if node.rescan {
                         node.rescan = false;
@@ -236,7 +234,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         if count > 15 { eprintln!("Node {} has {} unusable ports", name, count); }
                     }
                 }
-                if tick%(15*SPREAD as u64) == 0 { check_loss(&ctrltx, &mut nodes).await; }
+                // if tick%(15*SPREAD as u64) == 0 { check_loss(&ctrltx, &mut nodes).await; }
                 tick += 1;
             }
             res = readrx.recv() => { // UdpControl messages from udpreader tasks
@@ -318,10 +316,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         if n >= 3 {
                                             ctrltx.send(Control::Update(format!("{} {} is up after {} losses", name, port.label, n))).await.unwrap();
                                         }
-                                        else if port.losspct == 0.0 {
-                                            check_loss_port(port);
-                                            ctrltx.send(Control::Update(format!("{} {} is suffering {:.0}% packet loss", name, port.label, port.losspct))).await.unwrap();
-                                        }
+                                        // else if port.losspct == 0.0 {
+                                        //     check_loss_port(port);
+                                        //     ctrltx.send(Control::Update(format!("{} {} is suffering {:.0}% packet loss", name, port.label, port.losspct))).await.unwrap();
+                                        // }
                                         port.state = PortState::Ok;
                                     },
                                     PortState::Backoff(_) => {
@@ -396,35 +394,6 @@ async fn udpreader(port: SocketAddr, sock: Arc<net::UdpSocket>, readtx: sync::mp
             }
         }
     }
-}
-
-async fn check_loss(ctrltx: &tokio::sync::mpsc::Sender<Control>, nodes: &mut HashMap<String, PingNode>) {
-    for (name, node) in nodes.iter_mut() {
-        for port in node.ports.iter_mut() {
-            if port.losspct != 0.0 {
-                if check_loss_port(port) {
-                    ctrltx.send(Control::Update(format!("{} {} is suffering {:.0}% packet loss", name, port.label, port.losspct))).await.unwrap();
-                }
-            }
-        }
-    }
-}
-fn check_loss_port(port: &mut PingPort) -> bool {
-    let mut report = false;
-    let mut losses = 0;
-    for (i, x) in port.hist.iter().enumerate() {
-        if *x == 0 {
-            losses += 1;
-            if report == false && i < 15 { report = true; }
-        }
-    }
-    if losses > 0 {
-        port.losspct = (losses as f32/port.hist.len() as f32)*100.0;
-    }
-    else {
-        port.losspct = 0.0;
-    }
-    report
 }
 
 fn isprivate(ip: std::net::IpAddr) -> bool {

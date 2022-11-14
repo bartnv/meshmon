@@ -85,7 +85,7 @@ enum ConnState {
 #[derive(Debug)]
 pub enum Control {
     Tick,
-    Round,
+    Round(u64), // Ping round number
     NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for control messages to the TCP task)
     DropPeer(String), // Node name
     NewLink(String, String, String, u32), // Sender name, link from, link to, link seqno
