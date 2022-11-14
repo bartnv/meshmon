@@ -107,7 +107,7 @@
       if (!app.pairs[pair].link) offset -= 1;
       if (offset%2 == 0) offset = -offset;
       else offset += 1;
-      offset *= 3;
+      offset *= 3.5;
       let radians = Math.atan((from.cy()-to.cy())/(from.cx()-to.cx()))+0.5*Math.PI;
       let offsetx = offset*Math.cos(radians);
       let offsety = offset*Math.sin(radians);
@@ -116,7 +116,11 @@
       else if (data.fromintf.includes(':')) app.pairs[pair].paths[path].el.stroke('#9090ff');
       else app.pairs[pair].paths[path].el.stroke('#00c000');
     }
-    else app.pairs[pair].paths[path].losspct = data.losspct;
+    else {
+      app.pairs[pair].paths[path].losspct = data.losspct;
+      let gap = data.losspct * 5;
+      app.pairs[pair].paths[path].el.attr('stroke-dasharray', 35-gap + ' ' + gap);
+    }
   }
   function addLogMsg(entry) {
     let ts = parseInt(entry[0]);
