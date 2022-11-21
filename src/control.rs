@@ -410,11 +410,9 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             redraw = true;
                         }
                         runtime.msp = calculate_msp(&runtime.graph);
-                        relaymsgs.push((sender, Protocol::Drop { from, to }, true));
+                        relaymsgs.push((sender, Protocol::Drop { from: from.clone(), to: to.clone() }, true));
                     }
                     if !runtime.wsclients.is_empty() {
-                        let from = runtime.graph[fnode].clone();
-                        let to = runtime.graph[tnode].clone();
                         let json = format!("{{ \"msg\": \"droplink\", \"from\": \"{from}\", \"to\": \"{to}\" }}");
                         runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
                     }
