@@ -430,8 +430,14 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     runtime.log.push((unixtime(), text));
                     redraw = true;
                 }
-                peers.insert(name, tx);
-            },
+                peers.insert(name.clone(), tx);
+                let config = aconfig.read().unwrap();
+                let mut runtime = config.runtime.write().unwrap();
+                if !runtime.wsclients.is_empty() {
+                    let json = format!("{{ \"msg\": \"newlink\", \"from\": \"{}\", \"to\": \"{name}\", \"mode\": \"unknown\" }}", myname.clone());
+                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                }
+        },
             Control::DropPeer(name) => {
                 peers.remove(&name);
                 let mut config = aconfig.write().unwrap();
@@ -457,6 +463,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         }
                     }
                     redraw = true;
+                }
+                if !runtime.wsclients.is_empty() {
+                    let json = format!("{{ \"msg\": \"droplink\", \"from\": \"{}\", \"to\": \"{name}\" }}", myname.clone());
+                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
                 }
                 runtime.msp = calculate_msp(&runtime.graph);
                 drop(runtime);
