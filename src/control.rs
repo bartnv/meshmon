@@ -279,7 +279,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     config.modified = false;
                 }
             },
-            Control::Round(round) => {
+            Control::Round(_round) => {
                 // Update interface stats
                 for i in data.intf.write().unwrap().values_mut() { i.lag = u16::MAX; }
                 for result in data.results.read().unwrap().iter() {
@@ -299,15 +299,20 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 // Update port history
                 for result in data.results.write().unwrap().iter_mut() {
                     if let Some(last) = result.last {
+                        let mut report = false;
                         result.push_hist(last);
                         result.last = None;
                         if last == 0 && result.losspct == 0.0 {
                             check_loss_port(result);
                             println!("{} {} is suffering {}% packet loss", &result.node, &result.port, result.losspct);
+                            report = true;
+                        }
+                        else if result.hist.len() == 1 { report = true; }
+                        if report {
                             let config = aconfig.read().unwrap();
                             let mut runtime = config.runtime.write().unwrap();
                             if !runtime.wsclients.is_empty() {
-                                let json = format!("{{ \"msg\": \"loss\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
+                                let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
                                     \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
                                     &myname, &result.intf, &result.node, &result.port, result.losspct.round()
                                 );
@@ -318,7 +323,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     else { result.push_hist(u16::MAX); }
                 }
 
-                if round%10 == 0 { check_loss(&aconfig, &data.results); }
+                check_loss(&aconfig, &data.results);
             },
             Control::NewLink(sender, from, to, seq) => {
                 let mut config = aconfig.write().unwrap();
@@ -431,13 +436,13 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     redraw = true;
                 }
                 peers.insert(name.clone(), tx);
-                let config = aconfig.read().unwrap();
-                let mut runtime = config.runtime.write().unwrap();
-                if !runtime.wsclients.is_empty() {
-                    let json = format!("{{ \"msg\": \"newlink\", \"from\": \"{}\", \"to\": \"{name}\", \"mode\": \"unknown\" }}", myname.clone());
-                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
-                }
-        },
+                // let config = aconfig.read().unwrap();
+                // let mut runtime = config.runtime.write().unwrap();
+                // if !runtime.wsclients.is_empty() {
+                //     let json = format!("{{ \"msg\": \"newlink\", \"from\": \"{}\", \"to\": \"{name}\", \"mode\": \"unknown\" }}", myname.clone());
+                //     runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                // }
+            },
             Control::DropPeer(name) => {
                 peers.remove(&name);
                 let mut config = aconfig.write().unwrap();
@@ -650,7 +655,7 @@ fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) {
                 let config = config.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
                 if !runtime.wsclients.is_empty() {
-                    let json = format!("{{ \"msg\": \"loss\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
+                    let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
                         \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
                         &config.name, &result.intf, &result.node, &result.port, result.losspct.round()
                     );
