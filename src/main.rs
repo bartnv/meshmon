@@ -97,8 +97,10 @@ pub enum Control {
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
     Result(String, String, String, u16), // Node name, interface address, port, rtt
     Update(String), // Status update
+    Path(String, String, String, String, String, u8) // Peer name, from name, to name, from intf, to intf, losspct
 }
 
+// The wire protocol, sent in serialized form over the tcp connection between nodes
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum Protocol {
     Intro { version: u8, name: String, pubkey: String },
@@ -111,7 +113,8 @@ pub enum Protocol {
     Check { step: u8 },
     Ping { value: u64 },
     Pong { value: u64 },
-    Scan { from: String, to: String }
+    Scan { from: String, to: String },
+    Path { from: String, to: String, fromintf: String, tointf: String, losspct: u8 }
 }
 impl Protocol {
     fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
@@ -323,4 +326,8 @@ pub fn unixtime() -> u64 {
 }
 pub fn timestamp() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn variant_eq<T>(a: &T, b: &T) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
 }

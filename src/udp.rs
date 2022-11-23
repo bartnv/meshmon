@@ -6,7 +6,7 @@ use tokio::{ net, sync };
 use ipnetwork::{ IpNetwork, Ipv6Network };
 use pnet_datalink::interfaces;
 use lazy_static::lazy_static;
-use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame };
+use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame, variant_eq };
 
 static PINGFREQ: u8 = 30;
 static SPREAD: u8 = 6;
@@ -436,8 +436,4 @@ fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
     frame.extend_from_slice(&name);
     frame.extend_from_slice(&payload);
     frame
-}
-
-fn variant_eq<T>(a: &T, b: &T) -> bool {
-    std::mem::discriminant(a) == std::mem::discriminant(b)
 }

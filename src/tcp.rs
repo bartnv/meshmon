@@ -93,6 +93,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     }
                     let result: Result<Protocol, DecodeError> = rmp_serde::from_slice(&frame);
                     if let Err(ref e) = result {
+                        if matches!(e, DecodeError::Syntax { .. }) { break; } // Can happen when an unknown protocol message is received
                         if debug { eprintln!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename); }
                         break 'select;
                     }
@@ -283,6 +284,9 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         },
                         Protocol::Scan { from, to } => {
                             control.push(Control::Scan(from, to));
+                        },
+                        Protocol::Path { from, to, fromintf, tointf, losspct } => {
+                            control.push(Control::Path(conn.nodename.clone(), from, to, fromintf, tointf, losspct));
                         },
                         p => {
                             eprintln!("Received unexpected protocol message {:?} on TCP task", p);

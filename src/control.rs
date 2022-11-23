@@ -161,6 +161,25 @@ struct IntfStats {
     lag: u16
 }
 
+#[derive(Debug)]
+struct Path {
+    from: String,
+    to: String,
+    fromintf: String,
+    tointf: String,
+    losspct: u8
+}
+impl Path {
+    fn new(from: String, to: String, fromintf: String, tointf: String, losspct: u8) -> Path {
+        Path { from, to, fromintf, tointf, losspct }
+    }
+}
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.from == other.from && self.to == other.to && self.fromintf == other.fromintf && self.tointf == other.tointf
+    }
+}
+
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>, web: Option<std::net::SocketAddr>) {
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
@@ -173,6 +192,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
     let mut directmsgs: Vec<(String, Protocol)> = vec![];
     let mut udpmsgs: Vec<Control> = vec![];
+    let mut pathcache: Vec<Path> = vec![];
     let data: Arc<Data> = Arc::new(Default::default());
 
     if let Some(sa) = web {
@@ -304,7 +324,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         result.last = None;
                         if last == 0 && result.losspct == 0.0 {
                             check_loss_port(result);
-                            println!("{} {} is suffering {}% packet loss", &result.node, &result.port, result.losspct);
+                            if debug { println!("{} {} is suffering {}% packet loss", &result.node, &result.port, result.losspct); }
                             report = true;
                         }
                         else if result.hist.len() == 1 { report = true; }
@@ -318,12 +338,16 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                                 );
                                 runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
                             }
+                            let path = Protocol::Path { from: myname.clone(), to: result.node.clone(), fromintf: result.intf.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 };
+                            relaymsgs.push((myname.clone(), path, false));
                         }
                     }
                     else { result.push_hist(u16::MAX); }
                 }
 
-                check_loss(&aconfig, &data.results);
+                for path in check_loss(&aconfig, &data.results) {
+                    relaymsgs.push((myname.clone(), path, false));
+                }
             },
             Control::NewLink(sender, from, to, seq) => {
                 let mut config = aconfig.write().unwrap();
@@ -544,6 +568,36 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
                 redraw = true;
             },
+            Control::Path(peer, from, to, fromintf, tointf, losspct) => {
+                let mut relay = true;
+                let path = Path::new(from.clone(), to.clone(), fromintf.clone(), tointf.clone(), losspct);
+                if debug { println!("Received {:?} from {peer}", path); }
+
+                match pathcache.iter_mut().find(|e| **e == path) { // Comparison ignores losspct field
+                    Some(found) => {
+                        if found.losspct == path.losspct { relay = false; }
+                        else { found.losspct = path.losspct; }
+                    },
+                    None => {
+                        pathcache.push(path);
+                    }
+                }
+
+                if relay {
+                    let config = aconfig.read().unwrap();
+                    let mut runtime = config.runtime.write().unwrap();
+                    if !runtime.wsclients.is_empty() {
+                        let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
+                            \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
+                            &from, &fromintf, &to, &tointf, losspct
+                        );
+                        runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                    }
+    
+                    let protocol = Protocol::Path { from, to, fromintf, tointf, losspct };
+                    relaymsgs.push((peer, protocol, false));
+                }
+            },
             _ => {
                 panic!("Received unexpected Control message on control task");
             }
@@ -645,13 +699,14 @@ fn calculate_msp(graph: &UnGraph<String, u32>) -> UnGraph<String, u32> {
     graph::Graph::from_elements(algo::min_spanning_tree(&graph))
 }
 
-fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) {
+fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) -> Vec<Protocol> {
+    let mut ret = Vec::new();
     for mut result in results.write().unwrap().iter_mut() {
         if result.losspct != 0.0 {
             let prev = result.losspct.round();
             check_loss_port(&mut result);
             if result.losspct.round() != prev {
-                println!("{} {} is suffering {}% packet loss", result.node, result.port, result.losspct);
+                // println!("{} {} is suffering {}% packet loss", result.node, result.port, result.losspct);
                 let config = config.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
                 if !runtime.wsclients.is_empty() {
@@ -661,9 +716,12 @@ fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) {
                     );
                     runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
                 }
+                let path = Protocol::Path { from: config.name.clone(), to: result.node.clone(), fromintf: result.intf.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 };
+                ret.push(path);
             }
         }
     }
+    return ret;
 }
 fn check_loss_port(result: &mut PingResult) {
     let mut count = 0;
