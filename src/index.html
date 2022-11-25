@@ -6,11 +6,7 @@
 <script>
   'use strict';
 
-  let app = {
-    nodes: {},
-    edges: [],
-    pairs: {}
-  };
+  let app = {};
 
   $().ready(function() {
     setupWebsocket();
@@ -26,19 +22,37 @@
       console.log('Received ' + data.msg + ' message', data);
       switch (data.msg) {
         case 'init':
-          renderGraph(data);
+          app.nodes = {};
+          for (let node of data.nodes) { app.nodes[node.name] = node; }
+          app.pairs = {};
+          for (let link of data.edges) addLink(link);
+          for (let path of data.paths) addPath(path);
+          renderGraph();
+          $('#log').empty();
+          for (let entry of data.log) { addLogMsg(entry); }
+          if (data.log.length) $('#log').prop('scrollTop', $('#log').height());
           break;
         case 'log':
           addLogMsg([ data.ts, data.text ]);
           break;
         case 'newlink':
-          addEdge(data);
+          addLink(data);
+          renderGraph();
           break;
         case 'droplink':
-          removeEdge(data);
+          dropLink(data);
           break;
-        case 'loss':
-          renderPath(data);
+        case 'pathstate':
+          let pair = data.fromname<data.toname?data.fromname + '-' + data.toname:data.toname + '-' + data.fromname;
+          let pathname = data.fromname<data.toname?data.fromintf + '-' + data.tointf:data.tointf + '-' + data.fromintf;
+          if (!app.pairs[pair] || !app.pairs[pair].paths[pathname]) {
+            addPath(data);
+            renderPath(app.pairs[pair], app.pairs[pair].paths[pathname]);
+          }
+          else {
+            app.pairs[pair].paths[pathname].losspct = data.losspct;
+            updatePath(app.pairs[pair].paths[pathname]);
+          }
           break;
       }
     };
@@ -51,76 +65,72 @@
       setStatus('Error: ' + event.data, 'white', 'orange');
     };
   }
-  function renderGraph(data) {
-    if (!data.nodes?.[0]?.name) return;
+  function renderGraph() {
     $('#graph').empty();
     window.graph = SVG().addTo('#graph').size('100%', '100%').viewbox(-1000, -1000, 2000, 2000);
     let radius = 750;
-    let d = 2 * Math.PI / data.nodes.length; // Radians between nodes
-    for (let i in data.nodes) {
+    let d = 2 * Math.PI / Object.keys(app.nodes).length; // Radians between nodes
+    let i = 0;
+    for (let node of Object.values(app.nodes)) {
       let x = Math.round(radius * Math.sin(d * i));
       let y = Math.round(-(radius * Math.cos(d * i)));
-      data.nodes[i].el = graph.circle(50).cx(x).cy(y).fill('white');
-      graph.plain(data.nodes[i].name).fill('white').font({ size: 30 }).cx(x * 1.15).cy(y * 1.075);
-      app.nodes[data.nodes[i].name] = data.nodes[i];
+      node.el = graph.circle(50).cx(x).cy(y).stroke('black').fill('red').attr('stroke-width', 5);
+      graph.plain(node.name).fill('white').font({ size: 30 }).cx(x * 1.15).cy(y * 1.075);
+      i += 1;
     }
-    for (let edge of data.edges) addEdge(edge);
-    for (let path of data.paths) renderPath(path);
-    SVG.find('circle').front();
-    $('#log').empty();
-    for (let entry of data.log) { addLogMsg(entry); }
-    if (data.log.length) $('#log').prop('scrollTop', $('#log').height());
-  }
-  function addEdge(edge) {
-    let from = app.nodes[edge.from];
-    let to = app.nodes[edge.to];
-    edge.el = graph.line(from.el.cx(), from.el.cy(), to.el.cx(), to.el.cy()).stroke('red').attr('stroke-width', 3);
-    app.edges.push(edge);
-  }
-  function removeEdge(edge) {
-    app.edges = app.edges.filter(function(entry) {
-      if ((entry.from == edge.from) && (entry.to == edge.to) ||
-          (entry.from == edge.to) && (entry.to == edge.from)) {
-        entry.el.remove();
-        return false;
+    for (let pair of Object.values(app.pairs)) {
+      if (pair.link) {
+        let from = app.nodes[pair.link.from];
+        let to = app.nodes[pair.link.to];
+        pair.link.el = graph.line(from.el.cx(), from.el.cy(), to.el.cx(), to.el.cy()).stroke('red').attr('stroke-width', 3).back();
       }
-      return true;
-    });
+      pair.count = 0;
+      for (let path of Object.values(pair.paths)) {
+        renderPath(pair, path);
+      }
+    }
+    SVG.find('circle').front();
   }
-  function renderPath(data) {
-    let pair = data.fromname<data.toname?data.fromname + '-' + data.toname:data.toname + '-' + data.fromname;
-    let path = data.fromname<data.toname?data.fromintf + '-' + data.tointf:data.tointf + '-' + data.fromintf;
-    if (!app.pairs[pair]) {
-      app.pairs[pair] = { count: 1, paths: {}, link: false };
-      if (app.edges.find((entry) => {
-        if ((entry.from == data.fromname) && (entry.to == data.toname) ||
-            (entry.from == data.toname) && (entry.to == data.fromname)) return true;
-        return false;
-      })) app.pairs[pair].link = true;
-    }
-    else app.pairs[pair].count += 1;
-    if (!app.pairs[pair].paths[path]) {
-      app.pairs[pair].paths[path] = { losspct: data.losspct };
-      let from = app.nodes[data.fromname].el;
-      let to = app.nodes[data.toname].el;
-      let offset = app.pairs[pair].count;
-      if (!app.pairs[pair].link) offset -= 1;
-      if (offset%2 == 0) offset = -offset;
-      else offset += 1;
-      offset *= 3.5;
-      let radians = Math.atan((from.cy()-to.cy())/(from.cx()-to.cx()))+0.5*Math.PI;
-      let offsetx = offset*Math.cos(radians);
-      let offsety = offset*Math.sin(radians);
-      app.pairs[pair].paths[path].el = graph.line(from.cx()+offsetx, from.cy()+offsety, to.cx()+offsetx, to.cy()+offsety).fill('none').attr('stroke-width', 3);
-      if (data.fromintf.startsWith('10.')) app.pairs[pair].paths[path].el.stroke('orange');
-      else if (data.fromintf.includes(':')) app.pairs[pair].paths[path].el.stroke('#9090ff');
-      else app.pairs[pair].paths[path].el.stroke('#00c000');
-    }
-    else {
-      app.pairs[pair].paths[path].losspct = data.losspct;
-      let gap = data.losspct * 5;
-      app.pairs[pair].paths[path].el.attr('stroke-dasharray', 35-gap + ' ' + gap);
-    }
+  function addLink(link) {
+    let pair = link.from<link.to?link.from + '-' + link.to:link.to + '-' + link.from;
+    if (!app.pairs[pair]) app.pairs[pair] = { paths: {}, count: 0 };
+    app.pairs[pair].link = link;
+  }
+  function dropLink(link) {
+    let pair = link.from<link.to?link.from + '-' + link.to:link.to + '-' + link.from;
+    if (app.pairs[pair].link?.el) app.pairs[pair].link.el.remove();
+    app.pairs[pair].link = null;
+  }
+  function addPath(path) {
+    let pair = path.fromname<path.toname?path.fromname + '-' + path.toname:path.toname + '-' + path.fromname;
+    let pathname = path.fromname<path.toname?path.fromintf + '-' + path.tointf:path.tointf + '-' + path.fromintf;
+    if (!app.pairs[pair]) app.pairs[pair] = { paths: {}, count: 0, link: false };
+    app.pairs[pair].paths[pathname] = path;
+  }
+  function renderPath(pair, path) {
+    pair.count += 1;
+    let from = app.nodes[path.fromname]?.el;
+    let to = app.nodes[path.toname]?.el;
+    if (!from || !to) return;
+    let offset = pair.count;
+    if (!pair.link) offset -= 1;
+    if (offset%2 == 0) offset = -offset;
+    else offset += 1;
+    offset *= 3.5;
+    let radians = Math.atan((from.cy()-to.cy())/(from.cx()-to.cx()))+0.5*Math.PI;
+    let offsetx = offset*Math.cos(radians);
+    let offsety = offset*Math.sin(radians);
+    path.el = graph.line(from.cx()+offsetx, from.cy()+offsety, to.cx()+offsetx, to.cy()+offsety).attr('stroke-width', 3);
+    if (path.fromintf.startsWith('10.')) path.el.stroke('orange');
+    else if (path.fromintf.includes(':')) path.el.stroke('#9090ff');
+    else path.el.stroke('#00c000');
+    if (path.losspct) updatePath(path);
+    from.front();
+    to.front();
+  }
+  function updatePath(path) {
+    let gap = Math.min(path.losspct * 4, 60);
+    path.el?.attr('stroke-dasharray', 70-gap + ' ' + gap);
   }
   function addLogMsg(entry) {
     let ts = parseInt(entry[0]);
