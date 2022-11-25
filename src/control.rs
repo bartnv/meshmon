@@ -141,7 +141,8 @@ struct Data {
     log: RwLock<VecDeque<String>>,
     ping: RwLock<VecDeque<String>>,
     intf: RwLock<HashMap<String, IntfStats>>,
-    results: RwLock<Vec<PingResult>>
+    results: RwLock<Vec<PingResult>>,
+    pathcache: RwLock<Vec<Path>>
 }
 impl Data {
     fn push_log(&self, line: String) {
@@ -192,7 +193,6 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
     let mut directmsgs: Vec<(String, Protocol)> = vec![];
     let mut udpmsgs: Vec<Control> = vec![];
-    let mut pathcache: Vec<Path> = vec![];
     let data: Arc<Data> = Arc::new(Default::default());
 
     if let Some(sa) = web {
@@ -573,6 +573,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let path = Path::new(from.clone(), to.clone(), fromintf.clone(), tointf.clone(), losspct);
                 if debug { println!("Received {:?} from {peer}", path); }
 
+                let mut pathcache = data.pathcache.write().unwrap();
                 match pathcache.iter_mut().find(|e| **e == path) { // Comparison ignores losspct field
                     Some(found) => {
                         if found.losspct == path.losspct { relay = false; }
@@ -916,6 +917,10 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
         let results = data.results.read().unwrap();
         for result in results.iter() {
             res.paths.push(JsonPath { fromname: config.name.clone(), fromintf: result.intf.clone(), toname: result.node.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 });
+        }
+        let pathcache = data.pathcache.read().unwrap();
+        for path in pathcache.iter() {
+            res.paths.push(JsonPath { fromname: path.from.clone(), fromintf: path.fromintf.clone(), toname: path.to.clone(), tointf: path.tointf.clone(), losspct: path.losspct });
         }
         tx.send(Ok(Message::text(serde_json::to_string(&res).unwrap()))).expect("Failed to send network graph to websocket");
     }
