@@ -702,10 +702,10 @@ fn calculate_msp(graph: &UnGraph<String, u32>) -> UnGraph<String, u32> {
 
 fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) -> Vec<Protocol> {
     let mut ret = Vec::new();
-    for mut result in results.write().unwrap().iter_mut() {
+    for result in results.write().unwrap().iter_mut() {
         if result.losspct != 0.0 {
             let prev = result.losspct.round();
-            check_loss_port(&mut result);
+            check_loss_port(result);
             if result.losspct.round() != prev {
                 // println!("{} {} is suffering {}% packet loss", result.node, result.port, result.losspct);
                 let config = config.read().unwrap();
@@ -722,7 +722,7 @@ fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) -
             }
         }
     }
-    return ret;
+    ret
 }
 fn check_loss_port(result: &mut PingResult) {
     let mut count = 0;
