@@ -54,6 +54,7 @@ struct PingPort {
     ip: String,
     port: u16,
     route: String,
+    external: Option<String>,
     usable: bool,
     waiting: bool,
     sent: u32,
@@ -73,6 +74,7 @@ impl PingPort {
             ip: sa.ip().to_string(),
             port: sa.port(),
             route: route.unwrap_or_default(),
+            external: None,
             usable,
             waiting: false,
             sent: 0,
@@ -269,10 +271,12 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let route = local.ip().to_string();
                         let remoteip = remote.ip().to_string();
                         let res = node.ports.iter_mut().find(|p| p.ip == remoteip && p.route == route);
+                        let mut source = String::new();
                         let mut port = match res {
                             Some(port) => port,
                             None => {
                                 if debug { println!("Learned new port {} for node {} with route {}", remote, name, route); }
+                                source = remote.ip().to_string();
                                 node.ports.push(PingPort::from(&remote.to_string(), Some(route), true));
                                 node.ports.last_mut().unwrap()
                             }
@@ -285,7 +289,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
 
                         match result.unwrap() {
                             Protocol::Ping { value } => {
-                                let frame = build_frame(&node.sbox, Protocol::Pong { value });
+                                let frame = build_frame(&node.sbox, Protocol::Pong { value, source });
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
                                     eprintln!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e);
                                 }
@@ -295,7 +299,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     }
                                 }
                             },
-                            Protocol::Pong { value } => {
+                            Protocol::Pong { value, source } => {
                                 if !port.usable {
                                     port.usable = true;
                                     if debug { println!("Marked {} as pingable via {}", port.ip, port.route); }
@@ -326,6 +330,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         ctrltx.send(Control::Update(format!("{} {} is up", name, port.label))).await.unwrap();
                                         port.state = PortState::Ok;
                                     }
+                                }
+                                if !source.is_empty() && source != port.route && (port.external.is_none() || *port.external.as_ref().unwrap() != source) {
+                                    if debug { println!("Learned external (NAT) address for route {}: {}", &port.route, &source) }
+                                    port.external = Some(source);
                                 }
                             },
                             p => {
@@ -385,7 +393,7 @@ async fn udpreader(port: SocketAddr, sock: Arc<net::UdpSocket>, readtx: sync::mp
                 if name.is_err() { eprintln!("Invalid name in UDP message from {}", addr); continue; }
                 let mut frame = Vec::new();
                 frame.extend_from_slice(&payload[1..]);
-                if let Err(e) = readtx.send(UdpControl::Frame(name.unwrap(), port.clone(), addr, frame)).await {
+                if let Err(e) = readtx.send(UdpControl::Frame(name.unwrap(), port, addr, frame)).await {
                     eprintln!("MPSC channel error: {}", e);
                 }
             },

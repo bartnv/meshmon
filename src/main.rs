@@ -112,7 +112,7 @@ pub enum Protocol {
     Drop { from: String, to: String },
     Check { step: u8 },
     Ping { value: u64 },
-    Pong { value: u64 },
+    Pong { value: u64, source: String },
     Scan { from: String, to: String },
     Path { from: String, to: String, fromintf: String, tointf: String, losspct: u8 }
 }
@@ -228,7 +228,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if let Ok((socket, addr)) = listener.accept().await {
                     let ctrltx = ctrltx.clone();
                     let config = config.clone();
-                    if debug { println!("Incoming connection from {} to {}", addr, socket.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap())); }
+                    if debug { println!("Incoming connection from {} to {}", addr, socket.local_addr().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap())); }
                     tokio::spawn(async move {
                         tcp::run(config, socket, ctrltx, false, learn).await;
                     });
