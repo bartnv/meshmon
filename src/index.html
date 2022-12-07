@@ -71,7 +71,10 @@
     let radius = 750;
     let d = 2 * Math.PI / Object.keys(app.nodes).length; // Radians between nodes
     let i = 0;
-    for (let node of Object.values(app.nodes)) {
+    let nodes = Object.values(app.nodes);
+    let local = nodes.shift();
+    nodes.sort((a, b) => a.name > b.name).unshift(local);
+    for (let node of nodes) {
       let x = Math.round(radius * Math.sin(d * i));
       let y = Math.round(-(radius * Math.cos(d * i)));
       node.el = graph.circle(50).cx(x).cy(y).stroke('black').fill('red').attr('stroke-width', 5);

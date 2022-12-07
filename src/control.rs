@@ -571,7 +571,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             Control::Path(peer, from, to, fromintf, tointf, losspct) => {
                 let mut relay = true;
                 let path = Path::new(from.clone(), to.clone(), fromintf.clone(), tointf.clone(), losspct);
-                if debug { println!("Received {:?} from {peer}", path); }
+                // if debug { println!("Received {:?} from {peer}", path); }
 
                 let mut pathcache = data.pathcache.write().unwrap();
                 match pathcache.iter_mut().find(|e| **e == path) { // Comparison ignores losspct field
@@ -620,7 +620,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         if runtime.msp[peer] == from { continue; }
                         match peers.get(&runtime.msp[peer]) {
                             Some(tx) => {
-                                if debug { println!("Relaying {:?} to {}", proto, runtime.msp[peer]); }
+                                // if debug { println!("Relaying {:?} to {}", proto, runtime.msp[peer]); }
                                 targets.push((tx.clone(), Control::Send(proto.clone())));
                             },
                             None => {
