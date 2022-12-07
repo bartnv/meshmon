@@ -159,7 +159,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                             let route = addr.ip().to_string();
                                             if route.starts_with("fe80::") { continue; } // Probably no point in using a link local route
                                             if debug { println!("Sending UDP probe to {}:{} via {}", target.ip, target.port, route); }
-                                            if !send_ping(&socks, &node.sbox, target, &route).await && debug {
+                                            if !send_ping(&socks, &node.sbox, target, &route, true).await && debug {
                                                 eprintln!("Failed to send UDP probe to {}:{} via {}", target.ip, target.port, route);
                                             }
                                         }
@@ -225,7 +225,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     continue;
                                 }
                             }
-                            if send_ping(&socks, &node.sbox, target, &target.route).await {
+                            if send_ping(&socks, &node.sbox, target, &target.route, false).await {
                                 target.sent += 1;
                                 target.waiting = true;
                             }
@@ -271,12 +271,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let route = local.ip().to_string();
                         let remoteip = remote.ip().to_string();
                         let res = node.ports.iter_mut().find(|p| p.ip == remoteip && p.route == route);
-                        let mut source = String::new();
                         let mut port = match res {
                             Some(port) => port,
                             None => {
                                 if debug { println!("Learned new port {} for node {} with route {}", remote, name, route); }
-                                source = remote.ip().to_string();
                                 node.ports.push(PingPort::from(&remote.to_string(), Some(route), true));
                                 node.ports.last_mut().unwrap()
                             }
@@ -289,12 +287,15 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
 
                         match result.unwrap() {
                             Protocol::Ping { value } => {
-                                let frame = build_frame(&node.sbox, Protocol::Pong { value, source });
+                                let frame = match value {
+                                    0 => build_frame(&node.sbox, Protocol::Pong { value: 0, source: remote.ip().to_string() }),
+                                    _ => build_frame(&node.sbox, Protocol::Pong { value, source: String::new() })
+                                };
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
                                     eprintln!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e);
                                 }
                                 if !port.usable || port.state > PortState::Loss(0) {
-                                    if !send_ping(&socks, &node.sbox, port, &port.route).await && debug {
+                                    if !send_ping(&socks, &node.sbox, port, &port.route, true).await && debug {
                                         eprintln!("Failed to send UDP probe to {}:{} via {}", port.ip, port.port, port.route);
                                     }
                                 }
@@ -304,10 +305,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     port.usable = true;
                                     if debug { println!("Marked {} as pingable via {}", port.ip, port.route); }
                                 }
-                                let rtt = match (EPOCH.elapsed().as_millis() as u64-value) as u16 { 0 => 1, n => n };
-                                if rtt < port.minrtt { port.minrtt = rtt; }
-                                if port.waiting { // Probe pings don't have waiting set
-                                    port.waiting = false;
+                                if port.waiting { port.waiting = false; }
+                                if value != 0 { // Probe pings have a zero value so don't provide a round-trip time
+                                    let rtt = match (EPOCH.elapsed().as_millis() as u64-value) as u16 { 0 => 1, n => n };
+                                    if rtt < port.minrtt { port.minrtt = rtt; }
                                     port.push_hist(rtt);
                                     ctrltx.send(Control::Result(name.clone(), local.ip().to_string(), port.ip.clone(), rtt)).await.unwrap();
                                 }
@@ -423,11 +424,11 @@ fn isprivate(ip: std::net::IpAddr) -> bool {
     false
 }
 
-async fn send_ping(socks: &HashMap<String, Arc<net::UdpSocket>>, sbox: &Option<SalsaBox>, target: &PingPort, route: &String) -> bool {
+async fn send_ping(socks: &HashMap<String, Arc<net::UdpSocket>>, sbox: &Option<SalsaBox>, target: &PingPort, route: &String, probe: bool) -> bool {
     let res = socks.get(route);
     if res.is_none() { return false; }
     let sock = res.unwrap();
-    let frame = build_frame(sbox, Protocol::Ping { value: EPOCH.elapsed().as_millis() as u64 });
+    let frame = build_frame(sbox, Protocol::Ping { value: if probe { 0 } else { EPOCH.elapsed().as_millis() } as u64 });
     sock.send_to(&frame, (target.ip.as_ref(), target.port)).await.is_ok()
 }
 fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
