@@ -306,11 +306,15 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     if debug { println!("Marked {} as pingable via {}", port.ip, port.route); }
                                 }
                                 if port.waiting { port.waiting = false; }
+                                if !source.is_empty() && source != port.route && (port.external.is_none() || *port.external.as_ref().unwrap() != source) {
+                                    if debug { println!("Learned external (NAT) address for route {}: {}", &port.route, &source) }
+                                    port.external = Some(source);
+                                }
                                 if value != 0 { // Probe pings have a zero value so don't provide a round-trip time
                                     let rtt = match (EPOCH.elapsed().as_millis() as u64-value) as u16 { 0 => 1, n => n };
                                     if rtt < port.minrtt { port.minrtt = rtt; }
                                     port.push_hist(rtt);
-                                    ctrltx.send(Control::Result(name.clone(), local.ip().to_string(), port.ip.clone(), rtt)).await.unwrap();
+                                    ctrltx.send(Control::Result(name.clone(), match &port.external { Some(ip) => ip.clone(), None => local.ip().to_string() }, port.ip.clone(), rtt)).await.unwrap();
                                 }
                                 match port.state {
                                     PortState::New => { port.state = PortState::Init(1); },
@@ -331,10 +335,6 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         ctrltx.send(Control::Update(format!("{} {} is up", name, port.label))).await.unwrap();
                                         port.state = PortState::Ok;
                                     }
-                                }
-                                if !source.is_empty() && source != port.route && (port.external.is_none() || *port.external.as_ref().unwrap() != source) {
-                                    if debug { println!("Learned external (NAT) address for route {}: {}", &port.route, &source) }
-                                    port.external = Some(source);
                                 }
                             },
                             p => {
