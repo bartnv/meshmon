@@ -177,7 +177,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             for target in node.ports.iter_mut() {
                                 if target.waiting { // No response seen from previous round
                                     target.waiting = false;
-                                    if target.state > PortState::Init(0) { ctrltx.send(Control::Result(name.clone(), target.route.clone(), target.ip.clone(), 0)).await.unwrap(); }
+                                    if target.state > PortState::Init(0) { ctrltx.send(Control::Result(name.clone(), match &target.external { Some(ip) => ip.clone(), None => target.route.clone() }, target.ip.clone(), 0)).await.unwrap(); }
                                     target.push_hist(0);
                                     match target.state {
                                         PortState::New => { target.state = PortState::Init(0); },
