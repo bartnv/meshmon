@@ -429,6 +429,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         runtime.graph.remove_edge(edge);
                         dropped = runtime.graph.drop_detached_nodes();
                         if !dropped.is_empty() {
+                            let mut pathcache = data.pathcache.write().unwrap();
+                            pathcache.retain(|p| !dropped.contains(&p.from));
                             let text = match dropped.len() {
                                 1 => format!("{} Node {} left the network", timestamp(), dropped[0]),
                                 n => format!("{} Netsplit: lost connection to {} nodes ({})", timestamp(), n, dropped.join(", "))
@@ -485,6 +487,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         runtime.log.push((unixtime(), text));
                     }
                     else {
+                        let mut pathcache = data.pathcache.write().unwrap();
+                        pathcache.retain(|p| !dropped.contains(&p.from));
                         for node in &dropped {
                             let text = format!("{} Node {} left the network", timestamp(), node);
                             data.push_log(text.clone());
