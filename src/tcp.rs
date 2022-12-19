@@ -189,6 +189,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                         for edge in runtime.graph.raw_edges() {
                                             frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), seq: edge.weight }));
                                         }
+                                        control.push(Control::ReportTo(conn.nodename.clone()));
                                     }
                                     else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
                                     frames.push(build_frame(&sbox, Protocol::Sync { seq: conn.seq }));
@@ -262,6 +263,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     for edge in runtime.graph.raw_edges() {
                                         frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), seq: edge.weight }));
                                     }
+                                    control.push(Control::ReportTo(conn.nodename.clone()));
                                 }
                                 else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
                                 conn.seq = seq;

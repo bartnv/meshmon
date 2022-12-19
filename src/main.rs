@@ -97,7 +97,8 @@ pub enum Control {
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
     Result(String, String, String, u16), // Node name, interface address, port, rtt
     Update(String), // Status update
-    Path(String, String, String, String, String, u8) // Peer name, from name, to name, from intf, to intf, losspct
+    Path(String, String, String, String, String, u8), // Peer name, from name, to name, from intf, to intf, losspct
+    ReportTo(String) // Peer name
 }
 
 // The wire protocol, sent in serialized form over the tcp connection between nodes

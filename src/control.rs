@@ -604,6 +604,16 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     relaymsgs.push((peer, protocol, false));
                 }
             },
+            Control::ReportTo(peer) => {
+                let results = data.results.read().unwrap();
+                for result in results.iter() {
+                    directmsgs.push((peer.clone(), Protocol::Path { from: myname.clone(), to: result.node.clone(), fromintf: result.intf.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 }));
+                }
+                let pathcache = data.pathcache.read().unwrap();
+                for path in pathcache.iter() {
+                    directmsgs.push((peer.clone(), Protocol::Path { from: path.from.clone(), to: path.to.clone(), fromintf: path.fromintf.clone(), tointf: path.tointf.clone(), losspct: path.losspct }));
+                }
+            },
             _ => {
                 panic!("Received unexpected Control message on control task");
             }
