@@ -573,6 +573,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 redraw = true;
             },
             Control::Path(peer, from, to, fromintf, tointf, losspct) => {
+                if peer == myname { continue; } // Don't process relayed messages from ourselves
                 let mut relay = true;
                 let path = Path::new(from.clone(), to.clone(), fromintf.clone(), tointf.clone(), losspct);
                 // if debug { println!("Received {:?} from {peer}", path); }
