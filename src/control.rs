@@ -742,10 +742,21 @@ fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) -
 fn check_loss_port(result: &mut PingResult) {
     let mut count = 0;
     let mut losses = 0;
+    let mut conseq = 0;
     for x in &result.hist {
-        if *x == u16::MAX { continue; }
         count += 1;
-        if *x == 0 { losses += 1; }
+        if *x == 0 || *x == u16::MAX {
+            losses += 1;
+            conseq += 1;
+        }
+        else {
+            if conseq >= 3 { losses -= conseq; }
+            conseq = 0;
+        }
+        if count == 3 && conseq == 3 {
+            result.losspct = 100.0;
+            break;
+        }
         if count >= 100 { break; }
     }
     if losses > 0 {

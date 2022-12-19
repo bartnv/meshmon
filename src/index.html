@@ -45,6 +45,11 @@
         case 'pathstate':
           let pair = data.fromname<data.toname?data.fromname + '-' + data.toname:data.toname + '-' + data.fromname;
           let pathname = data.fromname<data.toname?data.fromintf + '-' + data.tointf:data.tointf + '-' + data.fromintf;
+          if (data.losspct == 100) {
+            if (app.pairs[pair] && app.pairs[pair].paths[pathname]) delete app.pairs[pair].paths[pathname];
+            renderGraph();
+            break;
+          }
           if (!app.pairs[pair] || !app.pairs[pair].paths[pathname]) {
             addPath(data);
             renderPath(app.pairs[pair], app.pairs[pair].paths[pathname]);
