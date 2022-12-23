@@ -451,7 +451,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     config.nodes.iter_mut().for_each(|node| { if dropped.contains(&node.name) { node.lastconnseq = 0; } });
                 }
             },
-            Control::NewPeer(name, tx) => {
+            Control::NewPeer(name, tx, report) => {
                 if peers.is_empty() {
                     let config = aconfig.read().unwrap();
                     let mut runtime = config.runtime.write().unwrap();
@@ -462,6 +462,17 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     redraw = true;
                 }
                 peers.insert(name.clone(), tx);
+
+                if report {
+                    let results = data.results.read().unwrap();
+                    for result in results.iter() {
+                        directmsgs.push((name.clone(), Protocol::Path { from: myname.clone(), to: result.node.clone(), fromintf: result.intf.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 }));
+                    }
+                    let pathcache = data.pathcache.read().unwrap();
+                    for path in pathcache.iter() {
+                        directmsgs.push((name.clone(), Protocol::Path { from: path.from.clone(), to: path.to.clone(), fromintf: path.fromintf.clone(), tointf: path.tointf.clone(), losspct: path.losspct }));
+                    }
+                }
                 // let config = aconfig.read().unwrap();
                 // let mut runtime = config.runtime.write().unwrap();
                 // if !runtime.wsclients.is_empty() {
@@ -602,16 +613,6 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     
                     let protocol = Protocol::Path { from, to, fromintf, tointf, losspct };
                     relaymsgs.push((peer, protocol, false));
-                }
-            },
-            Control::ReportTo(peer) => {
-                let results = data.results.read().unwrap();
-                for result in results.iter() {
-                    directmsgs.push((peer.clone(), Protocol::Path { from: myname.clone(), to: result.node.clone(), fromintf: result.intf.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 }));
-                }
-                let pathcache = data.pathcache.read().unwrap();
-                for path in pathcache.iter() {
-                    directmsgs.push((peer.clone(), Protocol::Path { from: path.from.clone(), to: path.to.clone(), fromintf: path.fromintf.clone(), tointf: path.tointf.clone(), losspct: path.losspct }));
                 }
             },
             _ => {

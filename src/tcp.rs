@@ -74,6 +74,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                 // println!("Received data: {}", hex);
                 collector.extend_from_slice(&buf[0..n]);
                 conn.lastdata = Instant::now();
+                let mut report = false;
                 loop {
                     // In this loop, a regular break will restart the select!{} macro, a "break 'select" will
                     // exit the function *with* cleanup and a return will exit the function without cleanup
@@ -120,11 +121,9 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 let mut node = match config.nodes.iter_mut().find(|node| node.name == conn.nodename) {
                                     Some(node) => node,
                                     None => {
-                                        {
-                                            if !learn {
-                                                eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
-                                                return;
-                                            }
+                                        if !learn {
+                                            eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
+                                            return;
                                         }
                                         config.nodes.push(Node { name: conn.nodename.clone(), pubkey: pubkey.clone(), .. Default::default() });
                                         config.modified = true;
@@ -189,7 +188,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                         for edge in runtime.graph.raw_edges() {
                                             frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), seq: edge.weight }));
                                         }
-                                        control.push(Control::ReportTo(conn.nodename.clone()));
+                                        report = true;
                                     }
                                     else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
                                     frames.push(build_frame(&sbox, Protocol::Sync { seq: conn.seq }));
@@ -263,7 +262,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     for edge in runtime.graph.raw_edges() {
                                         frames.push(build_frame(&sbox, Protocol::Link { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), seq: edge.weight }));
                                     }
-                                    control.push(Control::ReportTo(conn.nodename.clone()));
+                                    report = true;
                                 }
                                 else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
                                 conn.seq = seq;
@@ -274,7 +273,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             for (from, to, seq) in links.drain(..) {
                                 control.push(Control::NewLink(conn.nodename.clone(), from, to, seq));
                             }
-                            control.push(Control::NewPeer(conn.nodename.clone(), tx.clone()));
+                            control.push(Control::NewPeer(conn.nodename.clone(), tx.clone(), report));
                             conn.state = ConnState::Synchronized;
                             if debug { println!("Synchronized with {} ({}) with sequence no {}", conn.nodename, match active { true => "active", false => "passive" }, conn.seq); }
                         },

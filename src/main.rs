@@ -86,7 +86,7 @@ enum ConnState {
 pub enum Control {
     Tick,
     Round(u64), // Ping round number
-    NewPeer(String, sync::mpsc::Sender<Control>), // Node name, channel (for control messages to the TCP task)
+    NewPeer(String, sync::mpsc::Sender<Control>, bool), // Node name, channel (for control messages to the TCP task), report (whether to send paths to peer)
     DropPeer(String), // Node name
     NewLink(String, String, String, u32), // Sender name, link from, link to, link seqno
     DropLink(String, String, String), // Sender name, link from, link to
@@ -97,8 +97,7 @@ pub enum Control {
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
     Result(String, String, String, u16), // Node name, interface address, port, rtt
     Update(String), // Status update
-    Path(String, String, String, String, String, u8), // Peer name, from name, to name, from intf, to intf, losspct
-    ReportTo(String) // Peer name
+    Path(String, String, String, String, String, u8) // Peer name, from name, to name, from intf, to intf, losspct
 }
 
 // The wire protocol, sent in serialized form over the tcp connection between nodes
