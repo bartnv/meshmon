@@ -6,7 +6,7 @@ use tokio::{ net, sync };
 use ipnetwork::{ IpNetwork, Ipv6Network };
 use pnet_datalink::interfaces;
 use lazy_static::lazy_static;
-use crate::{ Config, Runtime, Node, Control, Protocol, encrypt_frame, decrypt_frame, variant_eq };
+use crate::{ Config, Runtime, Node, Control, Protocol, LogLevel, encrypt_frame, decrypt_frame, variant_eq };
 
 static PINGFREQ: u8 = 30;
 static SPREAD: u8 = 6;
@@ -201,7 +201,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                                 }
                                             }
                                             if *n == 3 {
-                                                ctrltx.send(Control::Update(format!("{} {} is down", name, target.label))).await.unwrap();
+                                                ctrltx.send(Control::Log(LogLevel::Status, format!("{} {} is down", name, target.label))).await.unwrap();
                                             }
                                             if *n == 15 {
                                                 target.state = PortState::Backoff(1);
@@ -323,7 +323,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     PortState::Ok => { },
                                     PortState::Loss(n) => {
                                         if n >= 3 {
-                                            ctrltx.send(Control::Update(format!("{} {} is up after {} losses", name, port.label, n))).await.unwrap();
+                                            ctrltx.send(Control::Log(LogLevel::Status, format!("{} {} is up after {} losses", name, port.label, n))).await.unwrap();
                                         }
                                         // else if port.losspct == 0.0 {
                                         //     check_loss_port(port);
@@ -332,7 +332,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         port.state = PortState::Ok;
                                     },
                                     PortState::Backoff(_) => {
-                                        ctrltx.send(Control::Update(format!("{} {} is up", name, port.label))).await.unwrap();
+                                        ctrltx.send(Control::Log(LogLevel::Status, format!("{} {} is up", name, port.label))).await.unwrap();
                                         port.state = PortState::Ok;
                                     }
                                 }

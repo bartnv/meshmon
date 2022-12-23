@@ -2,7 +2,7 @@ use crypto_box::{ PublicKey, SalsaBox};
 use rmp_serde::decode::Error as DecodeError;
 use std::{ time, time::{ Duration, Instant }, default::Default, sync::RwLock, sync::Arc, convert::TryInto };
 use tokio::{ net, sync, time::timeout, io::AsyncReadExt, io::AsyncWriteExt};
-use crate::{ Config, Node, Connection, ConnState, Control, Protocol, encrypt_frame, decrypt_frame };
+use crate::{ Config, Node, Connection, ConnState, Control, Protocol, LogLevel, encrypt_frame, decrypt_frame };
 
 pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool, learn: bool) {
     let (tx, mut ctrlrx) = sync::mpsc::channel(10);
@@ -36,7 +36,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
             _ = interval.tick() => {
                 let idle = conn.lastdata.elapsed().as_secs();
                 if idle > 89 {
-                    if debug { println!("Connection with {} lost", conn.nodename); }
+                    if debug { control.push(Control::Log(LogLevel::Status, format!("Connection with {} lost", conn.nodename))); }
                     break;
                 }
                 if idle > 59 {
@@ -45,7 +45,10 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
             }
             res = ctrlrx.recv() => {
                 if conn.state < ConnState::Synchronized {
-                    eprintln!("Received Control message on tcp task before synchronization; ignoring");
+                    if debug {
+                        let text = String::from("Received Control message on tcp task before synchronization; ignoring");
+                        control.push(Control::Log(LogLevel::Debug, text));
+                    }
                     continue;
                 }
                 match res.unwrap() {
@@ -61,11 +64,17 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                 let n = match res {
                     Ok(n) if n > 0 => n,
                     Ok(_) => {
-                        if debug { println!("Connection with {} closed", conn.nodename); }
+                        if debug {
+                            let text = format!("Connection with {} closed", conn.nodename);
+                            control.push(Control::Log(LogLevel::Debug, text));
+                        }
                         break;
                     },
                     Err(_) => {
-                        if debug { println!("Read error on connection with {}", conn.nodename); }
+                        if debug {
+                            let text = format!("Read error on connection with {}", conn.nodename);
+                            control.push(Control::Log(LogLevel::Debug, text));
+                        }
                         break;
                     }
                 };
@@ -87,7 +96,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         match decrypt_frame(&sbox, &frame[..]) {
                             Ok(plaintext) => { frame = plaintext; },
                             Err(e) => {
-                                eprintln!("Failed to decrypt message: {:?}; dropping connection to {}", e, conn.nodename);
+                                let text = format!("Failed to decrypt message: {:?}; dropping connection to {}", e, conn.nodename);
+                                control.push(Control::Log(LogLevel::Error, text));
                                 break 'select;
                             }
                         }
@@ -95,22 +105,29 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                     let result: Result<Protocol, DecodeError> = rmp_serde::from_slice(&frame);
                     if let Err(ref e) = result {
                         if matches!(e, DecodeError::Syntax { .. }) { break; } // Can happen when an unknown protocol message is received
-                        if debug { eprintln!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename); }
+                        if debug {
+                            let text = format!("Deserialization error: {:?}; dropping connection to {}", e, conn.nodename);
+                            control.push(Control::Log(LogLevel::Debug, text));
+                        }
                         break 'select;
                     }
                     let proto = result.unwrap();
                     if debug {
                         if let Protocol::Check { .. } = proto { } // Don't log Check frames
-                        else { println!("Received {:?} from {}", proto, conn.nodename); }
+                        else { control.push(Control::Log(LogLevel::Debug, format!("Received {:?} from {}", proto, conn.nodename))); }
                     }
                     match proto {
                         Protocol::Intro { version, name, pubkey } => {
                             if version != 1 {
-                                eprintln!("Protocol mismatch: received unknown protocol version {} from {}; dropping", version, conn.nodename);
+                                let text = format!("Protocol mismatch: received unknown protocol version {} from {}; dropping", version, conn.nodename);
+                                control.push(Control::Log(LogLevel::Error, text));
                                 break 'select;
                             }
                             if conn.state != ConnState::New {
-                                eprintln!("Protocol desync: received Intro after Crypt from {}; dropping", conn.nodename);
+                                if debug {
+                                    let text = format!("Protocol desync: received Intro after Crypt from {}; dropping", conn.nodename);
+                                    control.push(Control::Log(LogLevel::Debug, text));
+                                }
                                 break 'select;
                             }
                             conn.state = ConnState::Introduced;
@@ -122,7 +139,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     Some(node) => node,
                                     None => {
                                         if !learn {
-                                            eprintln!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
+                                            let text = format!("Connection received from unknown node {} ({})", conn.nodename, pubkey);
+                                            control.push(Control::Log(LogLevel::Info, text));
                                             return;
                                         }
                                         config.nodes.push(Node { name: conn.nodename.clone(), pubkey: pubkey.clone(), .. Default::default() });
@@ -131,11 +149,13 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     }
                                 };
                                 if node.pubkey != pubkey {
-                                    eprintln!("Connection received from node {} with changed pubkey ({})", conn.nodename, pubkey);
+                                    let text = format!("Connection received from node {} with changed pubkey ({})", conn.nodename, pubkey);
+                                    control.push(Control::Log(LogLevel::Info, text));
                                     return;
                                 }
                                 if node.connected {
-                                    eprintln!("Duplicate connection received from {}; dropping", conn.nodename);
+                                    let text = format!("Duplicate connection received from {}; dropping", conn.nodename);
+                                    control.push(Control::Log(LogLevel::Debug, text));
                                     return;
                                 }
                                 node.connected = true;
@@ -147,7 +167,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
 
                             if active {
-                                if debug { println!("Switching to a secure line..."); }
+                                if debug { control.push(Control::Log(LogLevel::Debug, String::from("Switching to a secure line..."))); }
                                 frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
                             }
                             else {
@@ -156,7 +176,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         },
                         Protocol::Crypt { boottime, osversion } => {
                             if conn.state != ConnState::Introduced {
-                                eprintln!("Protocol desync: received Crypt before Intro from {}; dropping", conn.nodename);
+                                let text = format!("Protocol desync: received Crypt before Intro from {}; dropping", conn.nodename);
+                                control.push(Control::Log(LogLevel::Debug, text));
                                 break 'select;
                             }
                             conn.state = ConnState::Encrypted;
@@ -172,11 +193,13 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 
                             let dur = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
                             let days = (dur.as_secs() - boottime)/86400;
-                            if debug { println!("Connection with {} authenticated; host up for {} days running {}", conn.nodename, days, osversion); }
+                            let text = format!("Connection with {} authenticated; host up for {} days running {}", conn.nodename, days, osversion);
+                            control.push(Control::Log(LogLevel::Info, text));
                         },
                         Protocol::Ports { node, ports } => {
                             if conn.state < ConnState::Encrypted {
-                                eprintln!("Protocol desync: received Ports before Crypt from {}; dropping", conn.nodename);
+                                let text = format!("Protocol desync: received Ports before Crypt from {}; dropping", conn.nodename);
+                                control.push(Control::Log(LogLevel::Debug, text));
                                 break 'select;
                             }
                             control.push(Control::Ports(conn.nodename.clone(), node, ports));
@@ -190,7 +213,10 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                         }
                                         report = true;
                                     }
-                                    else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
+                                    else if debug {
+                                        let text = format!("Not sending links to already-connected node {}", conn.nodename);
+                                        control.push(Control::Log(LogLevel::Debug, text));
+                                    }
                                     frames.push(build_frame(&sbox, Protocol::Sync { seq: conn.seq }));
                                 }
                                 else {
@@ -200,7 +226,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         }
                         Protocol::Node { name, pubkey } => {
                             if conn.state < ConnState::Encrypted {
-                                eprintln!("Protocol desync: received Node before Crypt from {}; dropping", conn.nodename);
+                                let text = format!("Protocol desync: received Node before Crypt from {}; dropping", conn.nodename);
+                                control.push(Control::Log(LogLevel::Debug, text));
                                 break 'select;
                             }
                             if pubkey.is_empty() { // This is a Node request
@@ -211,7 +238,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                         frames.push(build_frame(&sbox, Protocol::Ports { node: name, ports: node.listen.clone() }));
                                     },
                                     None => {
-                                        eprintln!("Received Node request for unknown node {}", name);
+                                        let text = format!("Received Node request for unknown node {}", name);
+                                        control.push(Control::Log(LogLevel::Debug, text));
                                     }
                                 }
                             }
@@ -220,11 +248,13 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 match config.nodes.iter().find(|node| node.name == name) {
                                     Some(node) => {
                                         if node.pubkey != pubkey {
-                                            eprintln!("Received Node message for {} with changed public key", name);
+                                            let text = format!("Received Node message for {} with changed public key", name);
+                                            control.push(Control::Log(LogLevel::Info, text));
                                         }
                                     },
                                     None => {
-                                        if debug { println!("Learned public key for node {}", name); }
+                                        let text = format!("Learned public key for node {}", name);
+                                        control.push(Control::Log(LogLevel::Info, text));
                                         config.nodes.push(Node { name, pubkey, .. Default::default() });
                                         config.modified = true;
                                     }
@@ -233,7 +263,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         },
                         Protocol::Link { from, to, seq } => {
                             if conn.state < ConnState::Encrypted {
-                                eprintln!("Protocol desync: received Link before Crypt from {}; dropping", conn.nodename);
+                                let text = format!("Protocol desync: received Link before Crypt from {}; dropping", conn.nodename);
+                                control.push(Control::Log(LogLevel::Debug, text));
                                 return;
                             }
                             let config = config.read().unwrap();
@@ -252,7 +283,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                         },
                         Protocol::Sync { seq } => {
                             if conn.state < ConnState::Encrypted {
-                                eprintln!("Protocol desync: received Sync before Crypt from {}; dropping", conn.nodename);
+                                let text = format!("Protocol desync: received Sync before Crypt from {}; dropping", conn.nodename);
+                                control.push(Control::Log(LogLevel::Debug, text));
                                 return;
                             }
                             if !active {
@@ -264,7 +296,10 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     }
                                     report = true;
                                 }
-                                else if debug { println!("Not sending links to already-connected node {}", conn.nodename); }
+                                else if debug {
+                                    let text = format!("Not sending links to already-connected node {}", conn.nodename);
+                                    control.push(Control::Log(LogLevel::Debug, text));
+                                }
                                 conn.seq = seq;
                                 frames.push(build_frame(&sbox, Protocol::Sync { seq }));
                             }
@@ -275,7 +310,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                             control.push(Control::NewPeer(conn.nodename.clone(), tx.clone(), report));
                             conn.state = ConnState::Synchronized;
-                            if debug { println!("Synchronized with {} ({}) with sequence no {}", conn.nodename, match active { true => "active", false => "passive" }, conn.seq); }
+                            let text = format!("Synchronized with {} ({}) with sequence no {}", conn.nodename, match active { true => "active", false => "passive" }, conn.seq);
+                            control.push(Control::Log(LogLevel::Info, text));
                         },
                         Protocol::Drop { from, to } => {
                             control.push(Control::DropLink(conn.nodename.clone(), from, to));
@@ -290,7 +326,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             control.push(Control::Path(conn.nodename.clone(), from, to, fromintf, tointf, losspct));
                         },
                         p => {
-                            eprintln!("Received unexpected protocol message {:?} on TCP task", p);
+                            let text = format!("Received unexpected protocol message {:?} on TCP task", p);
+                            control.push(Control::Log(LogLevel::Debug, text));
                         }
                     } // End of match proto
                 } // End of loop over protocol messages
@@ -301,12 +338,14 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                 match timeout(Duration::from_secs(10), socket.write_all(frame)).await {
                     Ok(res) => {
                         if res.is_err() {
-                            eprintln!("Write error to {}", conn.nodename);
+                            let text = format!("Write error to {}", conn.nodename);
+                            control.push(Control::Log(LogLevel::Debug, text));
                             break;
                         }
                     }
                     Err(_) => {
-                        eprintln!("Write timeout to {}", conn.nodename);
+                        let text = format!("Write timeout to {}", conn.nodename);
+                        control.push(Control::Log(LogLevel::Debug, text));
                         break;
                     }
                 }
@@ -331,12 +370,12 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 pub async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>, learn: bool) {
     let debug = config.read().unwrap().runtime.read().unwrap().debug;
     for addr in ports {
-        if debug { println!("Connecting to {}", addr); }
+        if debug { control.send(Control::Log(LogLevel::Debug, format!("Connecting to {}", addr))).await.unwrap(); }
         match timeout(Duration::from_secs(5), net::TcpStream::connect(&addr)).await {
             Ok(res) => {
                 match res {
                     Ok(mut stream) => {
-                        if debug { println!("Connected to {}", addr); }
+                        if debug { control.send(Control::Log(LogLevel::Debug, format!("Connected to {}", addr))).await.unwrap(); }
                         let frame = build_frame(&None, Protocol::new_intro(&config));
                         if timeout(Duration::from_secs(10), stream.write_all(&frame)).await.is_err() { continue; }
                         let config = config.clone();
@@ -346,16 +385,15 @@ pub async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Send
                         });
                         return;
                     },
-                    Err(e) => { if debug { println!("Error connecting to {}: {}", addr, e); } }
+                    Err(e) => { if debug { control.send(Control::Log(LogLevel::Debug, format!("Error connecting to {}: {}", addr, e))).await.unwrap(); } }
                 }
             },
-            Err(_) => { if debug { println!("Timeout connecting to {}", addr); } }
+            Err(_) => { if debug { control.send(Control::Log(LogLevel::Debug, format!("Timeout connecting to {}", addr))).await.unwrap(); } }
         }
     }
 }
 
 fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
-    // println!("Sending {:?}", proto);
     let payload = match sbox {
         Some(sbox) => encrypt_frame(sbox, &rmp_serde::to_vec(&proto).unwrap()),
         None => rmp_serde::to_vec(&proto).unwrap()

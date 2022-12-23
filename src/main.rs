@@ -8,7 +8,7 @@ use petgraph::graph::UnGraph;
 use clap::{ Command, Arg, ArgAction };
 use pnet_datalink::interfaces;
 use generic_array::GenericArray;
-use chrono::offset::Local;
+use chrono::{ TimeZone, offset::Local };
 
 mod control;
 mod tcp;
@@ -52,8 +52,7 @@ struct Runtime {
     acceptnewnodes: bool,
     tui: bool,
     debug: bool,
-    results: bool,
-    log: Vec<(u64, String)> // Unix timestamp, log message
+    results: bool
 }
 
 #[derive(Debug)]
@@ -82,6 +81,13 @@ enum ConnState {
     Encrypted,
     Synchronized,
 }
+#[derive(Debug, PartialEq)]
+pub enum LogLevel {
+    Status,
+    Info,
+    Error,
+    Debug
+}
 #[derive(Debug)]
 pub enum Control {
     Tick,
@@ -96,7 +102,7 @@ pub enum Control {
     Scan(String, String), // From node, to node
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
     Result(String, String, String, u16), // Node name, interface address, port, rtt
-    Update(String), // Status update
+    Log(LogLevel, String), // Status update
     Path(String, String, String, String, String, u8) // Peer name, from name, to name, from intf, to intf, losspct
 }
 
@@ -228,7 +234,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if let Ok((socket, addr)) = listener.accept().await {
                     let ctrltx = ctrltx.clone();
                     let config = config.clone();
-                    if debug { println!("Incoming connection from {} to {}", addr, socket.local_addr().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap())); }
+                    if debug {
+                        let text = format!("Incoming connection from {} to {}", addr, socket.local_addr().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap()));
+                        ctrltx.send(Control::Log(LogLevel::Info, text)).await.unwrap();
+                    }
                     tokio::spawn(async move {
                         tcp::run(config, socket, ctrltx, false, learn).await;
                     });
@@ -326,6 +335,9 @@ pub fn unixtime() -> u64 {
 }
 pub fn timestamp() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+pub fn timestamp_from(ts: u64) -> String {
+    Local.timestamp_opt(ts as i64, 0).unwrap().to_string()
 }
 
 fn variant_eq<T>(a: &T, b: &T) -> bool {

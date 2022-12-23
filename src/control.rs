@@ -1,14 +1,14 @@
 use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque }, cmp::Ordering, net::SocketAddr };
 use tokio::{ fs, sync };
 use futures_util::{ FutureExt, stream::StreamExt };
-use petgraph::{ graph, graph::UnGraph, dot, data::FromElements, algo };
+use petgraph::{ graph, graph::UnGraph, data::FromElements, algo };
 use termion::{ raw::IntoRawMode, screen::AlternateScreen };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
 use warp::{ Filter, ws::Message };
 use serde_derive::Serialize;
-use crate::{ Config, Node, Control, Protocol, unixtime, timestamp };
+use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, timestamp_from };
 
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
@@ -62,13 +62,9 @@ impl GraphExt for UnGraph<String, u32> {
     fn weakly_connected_dfs(&self, v: graph::NodeIndex, mut depth: u8, visited: &mut HashMap<graph::NodeIndex, u8>, found: &mut Vec<String>, parent: Option<graph::NodeIndex>) -> (u8, Vec<String>) {
         let mut children: Vec<String> = vec![];
         if let Some(parent) = parent {
-            if parent.index() != 0 {
-                // if self.contains_edge(graph::NodeIndex::new(0), v) { return (0, children); } // Is this needed?
-                children.push(self[v].clone());
-            }
+            if parent.index() != 0 { children.push(self[v].clone()); }
         }
         depth += 1;
-        // println!("Processing {} with depth {}", &self[v], depth);
         visited.insert(v, depth);
         let mut low = depth;
 
@@ -81,14 +77,12 @@ impl GraphExt for UnGraph<String, u32> {
                 let (lowest, mut names) = self.weakly_connected_dfs(to, depth, visited, found, Some(v));
                 if v.index() == 0 { continue; }
                 if lowest >= depth {
-                    println!("Node {} is cut vertex for {}", &self[v], names.join(", "));
                     found.append(&mut names);
                 }
                 else if lowest < low { low = lowest; }
                 children.append(&mut names);
             }
         }
-        // println!("Finished   {} with depth {} low {}", &self[v], depth, low);
         (low, children)
     }
 }
@@ -138,17 +132,17 @@ impl PartialEq for PingResult {
 
 #[derive(Default)]
 struct Data {
-    log: RwLock<VecDeque<String>>,
+    log: RwLock<VecDeque<(u64, String)>>,
     ping: RwLock<VecDeque<String>>,
     intf: RwLock<HashMap<String, IntfStats>>,
     results: RwLock<Vec<PingResult>>,
     pathcache: RwLock<Vec<Path>>
 }
 impl Data {
-    fn push_log(&self, line: String) {
+    fn push_log(&self, ts: u64, line: String) {
         let mut log = self.log.write().unwrap();
         if log.len() >= 50 { log.pop_back().unwrap(); }
-        log.push_front(line);
+        log.push_front((ts, line));
     }
     fn push_ping(&self, line: String) {
         let mut ping = self.ping.write().unwrap();
@@ -193,6 +187,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
     let mut directmsgs: Vec<(String, Protocol)> = vec![];
     let mut udpmsgs: Vec<Control> = vec![];
+    let mut logmsgs: Vec<(LogLevel, String)> = vec![];
     let data: Arc<Data> = Arc::new(Default::default());
 
     if let Some(sa) = web {
@@ -245,9 +240,13 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         }
                     }
                     if ports.is_empty() {
-                        println!("Number of peers ({}) is below target number ({}), but I have no more available nodes", count, config.targetpeers);
+                        let text = format!("Number of peers ({}) is below target number ({}), but I have no more available nodes", count, config.targetpeers);
+                        logmsgs.push((LogLevel::Info, text));
                     }
-                    else if debug { println!("Selected node {} for uplink connection", config.nodes.get(nodeidx).unwrap().name); }
+                    else if debug {
+                        let text = format!("Selected node {} for uplink connection", config.nodes.get(nodeidx).unwrap().name);
+                        logmsgs.push((LogLevel::Debug, text));
+                    }
                 }
                 else {
                     nodeidx = usize::MAX-1; // Reset node index for regular connections
@@ -256,10 +255,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         if runtime.graph.node_count() > 4 {
                             let nodes = runtime.graph.find_weakly_connected_nodes();
                             if !nodes.is_empty() {
-                                if debug { println!("Weakly connected to {}", nodes.join(",")); }
+                                if debug { logmsgs.push((LogLevel::Debug, format!("Weakly connected to {}", nodes.join(",")))); }
                                 let name = nodes.choose(&mut rand::thread_rng()).unwrap();
                                 if let Some(node) = config.nodes.iter().find(|i| i.name == *name) {
-                                    if debug { println!("Connecting to node {} to fix weak connection in network", name); }
+                                    logmsgs.push((LogLevel::Info, format!("Connecting to node {} to fix weak connection in network", name)));
                                     for addr in &node.listen {
                                         ports.push(addr.clone());
                                     }
@@ -274,18 +273,6 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     let ctrltx = ctrltx.clone();
                     tokio::spawn(async move {
                         crate::tcp::connect_node(config, ctrltx, ports, false).await;
-                    });
-                }
-
-                if let Some(file) = &config.dotfile {
-                    let runtime = config.runtime.read().unwrap();
-                    let file = file.clone();
-                    let data = format!("{:?}", dot::Dot::with_config(&runtime.graph, &[dot::Config::EdgeNoLabel]));
-                    let msp = format!("{:?}", dot::Dot::with_config(&runtime.msp, &[dot::Config::EdgeNoLabel]));
-                    tokio::spawn(async move {
-                        let mspfile = "msp.dot";
-                        fs::write(file, data).await.unwrap_or_else(|e| eprintln!("Failed to write dotfile: {}", e));
-                        fs::write(mspfile, msp).await.unwrap_or_else(|e| eprintln!("Failed to write msp dotfile: {}", e));
                     });
                 }
 
@@ -324,7 +311,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         result.last = None;
                         if last == 0 && result.losspct == 0.0 {
                             check_loss_port(result);
-                            if debug { println!("{} {} is suffering {}% packet loss", &result.node, &result.port, result.losspct); }
+                            logmsgs.push((LogLevel::Debug, format!("{} {} is suffering {}% packet loss", &result.node, &result.port, result.losspct)));
                             report = true;
                         }
                         else if result.hist.len() == 1 { report = true; }
@@ -365,11 +352,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             udpmsgs.push(Control::ScanNode(from.clone(), false));
                         }
                         if !peers.is_empty() {
-                            let text = format!("{} Node {} joined the network", timestamp(), from);
-                            data.push_log(text.clone());
-                            if term.is_none() { println!("{}", &text); }
-                            runtime.log.push((unixtime(), text));
-                            redraw = true;
+                            let text = format!("Node {} joined the network", from);
+                            logmsgs.push((LogLevel::Status, text));
                         }
                         runtime.graph.add_node(from.clone())
                     }
@@ -381,11 +365,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             udpmsgs.push(Control::ScanNode(to.clone(), false));
                         }
                         if !peers.is_empty() {
-                            let text = format!("{} Node {} joined the network", timestamp(), to);
-                            data.push_log(text.clone());
-                            if term.is_none() { println!("{}", &text); }
-                            runtime.log.push((unixtime(), text));
-                            redraw = true;
+                            let text = format!("Node {} joined the network", to);
+                            logmsgs.push((LogLevel::Status, text));
                         }
                         runtime.graph.add_node(to.clone())
                     }
@@ -432,13 +413,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             let mut pathcache = data.pathcache.write().unwrap();
                             pathcache.retain(|p| !dropped.contains(&p.from));
                             let text = match dropped.len() {
-                                1 => format!("{} Node {} left the network", timestamp(), dropped[0]),
-                                n => format!("{} Netsplit: lost connection to {} nodes ({})", timestamp(), n, dropped.join(", "))
+                                1 => format!("Node {} left the network", dropped[0]),
+                                n => format!("Netsplit: lost connection to {} nodes ({})", n, dropped.join(", "))
                             };
-                            data.push_log(text.clone());
-                            if term.is_none() { println!("{}", &text); }
-                            runtime.log.push((unixtime(), text));
-                            redraw = true;
+                            logmsgs.push((LogLevel::Status, text));
                         }
                         runtime.msp = calculate_msp(&runtime.graph);
                         relaymsgs.push((sender, Protocol::Drop { from: from.clone(), to: to.clone() }, true));
@@ -454,12 +432,9 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             Control::NewPeer(name, tx, report) => {
                 if peers.is_empty() {
                     let config = aconfig.read().unwrap();
-                    let mut runtime = config.runtime.write().unwrap();
-                    let text = format!("{} Joined the network with {} other nodes", timestamp(), runtime.graph.node_count()-1);
-                    data.push_log(text.clone());
-                    if term.is_none() { println!("{}", &text); }
-                    runtime.log.push((unixtime(), text));
-                    redraw = true;
+                    let runtime = config.runtime.read().unwrap();
+                    let text = format!("Joined the network with {} other nodes", runtime.graph.node_count()-1);
+                    logmsgs.push((LogLevel::Status, text));
                 }
                 peers.insert(name.clone(), tx);
 
@@ -491,19 +466,16 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         runtime.graph.remove_edge(edge);
                     }
                     dropped = runtime.graph.drop_detached_nodes();
-                    // if !dropped.is_empty() { println!("Lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" }); }
                     if peers.is_empty() {
-                        let text = format!("{} Disconnected from the network; lost {} node{}", timestamp(), dropped.len(), match dropped.len() { 1 => "", _ => "s" });
-                        data.push_log(text.clone());
-                        runtime.log.push((unixtime(), text));
+                        let text = format!("Disconnected from the network; lost {} node{}", dropped.len(), match dropped.len() { 1 => "", _ => "s" });
+                        logmsgs.push((LogLevel::Status, text));
                     }
                     else {
                         let mut pathcache = data.pathcache.write().unwrap();
                         pathcache.retain(|p| !dropped.contains(&p.from));
                         for node in &dropped {
-                            let text = format!("{} Node {} left the network", timestamp(), node);
-                            data.push_log(text.clone());
-                            runtime.log.push((unixtime(), text));
+                            let text = format!("Node {} left the network", node);
+                            logmsgs.push((LogLevel::Status, text));
                         }
                     }
                     redraw = true;
@@ -566,28 +538,13 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if results { println!("{}", data.ping.read().unwrap().front().unwrap()); }
                 redraw = true;
             },
-            Control::Update(text) => {
-                let text = format!("{} {}", timestamp(), text);
-                data.push_log(text.clone());
-                if term.is_none() { println!("{}", &text); }
-                let config = aconfig.read().unwrap();
-                let mut runtime = config.runtime.write().unwrap();
-                runtime.log.push((unixtime(), text.clone()));
-                if runtime.log.len() > 25 {
-                    let drain = runtime.log.len()-25;
-                    runtime.log.drain(0..drain);
-                }
-                if !runtime.wsclients.is_empty() {
-                    let json = format!("{{ \"msg\": \"log\", \"ts\": {}, \"text\": \"{}\" }}", unixtime(), &text);
-                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
-                }
-                redraw = true;
+            Control::Log(level, text) => {
+                logmsgs.push((level, text));
             },
             Control::Path(peer, from, to, fromintf, tointf, losspct) => {
                 if peer == myname { continue; } // Don't process relayed messages from ourselves
                 let mut relay = true;
                 let path = Path::new(from.clone(), to.clone(), fromintf.clone(), tointf.clone(), losspct);
-                // if debug { println!("Received {:?} from {peer}", path); }
 
                 let mut pathcache = data.pathcache.write().unwrap();
                 match pathcache.iter_mut().find(|e| **e == path) { // Comparison ignores losspct field
@@ -636,11 +593,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         if runtime.msp[peer] == from { continue; }
                         match peers.get(&runtime.msp[peer]) {
                             Some(tx) => {
-                                // if debug { println!("Relaying {:?} to {}", proto, runtime.msp[peer]); }
                                 targets.push((tx.clone(), Control::Send(proto.clone())));
                             },
                             None => {
-                                eprintln!("Peer {} not found", runtime.msp[peer]);
+                                logmsgs.push((LogLevel::Error, format!("Peer {} not found", runtime.msp[peer])));
                             }
                         }
                     }
@@ -654,7 +610,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 let tonode = match runtime.graph.find_node(&to) {
                     Some(idx) => idx,
                     None => {
-                        eprintln!("Node {} not found in graph", to);
+                        logmsgs.push((LogLevel::Error, format!("Node {} not found in graph", to)));
                         continue;
                     }
                 };
@@ -666,7 +622,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             targets.push((tx.clone(), Control::Send(proto)));
                         },
                         None => {
-                            eprintln!("Peer {} not found for directmessage", name);
+                            logmsgs.push((LogLevel::Error, format!("Peer {} not found for directmessage", name)));
                         }
                     }
                 }
@@ -675,6 +631,20 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         if !udpmsgs.is_empty() {
             for msg in udpmsgs.drain(..) {
                 targets.push((udptx.clone(), msg));
+            }
+        }
+        if !logmsgs.is_empty() {
+            for (level, text) in logmsgs.drain(..) {
+                if level == LogLevel::Debug && !debug { continue; }
+                if level != LogLevel::Debug { data.push_log(unixtime(), text.clone()); }
+                if term.is_none() { println!("{} {}", timestamp(), text); }
+                else { redraw = true; }
+                let config = aconfig.read().unwrap();
+                let mut runtime = config.runtime.write().unwrap();
+                if !runtime.wsclients.is_empty() {
+                    let json = format!("{{ \"msg\": \"log\", \"ts\": {}, \"text\": \"{}\" }}", unixtime(), text);
+                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                }
             }
         }
 
@@ -796,8 +766,8 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
             .title(" Network log ")
             .borders(Borders::ALL);
     let mut content: Vec<ListItem> = vec![];
-    for line in data.log.read().unwrap().iter().take(vert2[0].height.into()) {
-        content.push(ListItem::new(Span::from(line.clone())));
+    for (ts, line) in data.log.read().unwrap().iter().take(vert2[0].height.into()) {
+        content.push(ListItem::new(Span::from(format!("{} {}", timestamp_from(*ts), line))));
     }
     let list = List::new(content).block(block).start_corner(Corner::BottomLeft);
     f.render_widget(list, vert2[0]);
@@ -937,10 +907,11 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
             };
             res.edges.push(JsonEdge { from: runtime.graph[edge.source()].clone(), to: runtime.graph[edge.target()].clone(), mode });
         }
-        for (ts, msg) in &runtime.log {
+        drop(runtime);
+        let log = data.log.read().unwrap();
+        for (ts, msg) in log.iter() {
             res.log.push((*ts, msg.clone()));
         }
-        drop(runtime);
         let results = data.results.read().unwrap();
         for result in results.iter() {
             res.paths.push(JsonPath { fromname: config.name.clone(), fromintf: result.intf.clone(), toname: result.node.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 });
