@@ -100,6 +100,8 @@
     SVG.find('circle').front();
   }
   function addLink(link) {
+    if (!app.nodes[link.from]) app.nodes[link.from] = { name: link.from };
+    if (!app.nodes[link.to]) app.nodes[link.to] = { name: link.to };
     let pair = link.from<link.to?link.from + '-' + link.to:link.to + '-' + link.from;
     if (!app.pairs[pair]) app.pairs[pair] = { paths: {}, count: 0 };
     app.pairs[pair].link = link;
