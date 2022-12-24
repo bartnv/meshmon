@@ -16,7 +16,7 @@ serde_derive = "*"
 rmp-serde = "1"
 crypto_box = "0.8"
 rand = "0"
-byteorder = "1"
+byteorder = "*"
 sysinfo = "0"
 generic-array = "0"
 petgraph = "0.6"
@@ -27,8 +27,9 @@ ipnetwork = "0"
 warp = { version = "0.3", features = ["default", "tls"] }
 lazy_static = "1"
 tui = { version = "0.19", default-features = false, features = ['termion'] }
-termion = "1"
+termion = "2"
 chrono = "0"
+git-version = "*"
 
 [profile.release]
 strip = true

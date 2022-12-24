@@ -2,7 +2,7 @@ use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque 
 use tokio::{ fs, sync };
 use futures_util::{ FutureExt, stream::StreamExt };
 use petgraph::{ graph, graph::UnGraph, data::FromElements, algo };
-use termion::{ raw::IntoRawMode, screen::AlternateScreen };
+use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
@@ -210,7 +210,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         false => None,
         true => {
             let stdout = std::io::stdout().into_raw_mode().unwrap();
-            let stdout = AlternateScreen::from(stdout);
+            let stdout = stdout.into_alternate_screen().unwrap();
             let backend = TermionBackend::new(stdout);
             Some(Terminal::new(backend).unwrap())
         }
