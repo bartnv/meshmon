@@ -693,7 +693,6 @@ fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) -
             let prev = result.losspct.round();
             check_loss_port(result);
             if result.losspct.round() != prev {
-                // println!("{} {} is suffering {}% packet loss", result.node, result.port, result.losspct);
                 let config = config.read().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
                 if !runtime.wsclients.is_empty() {

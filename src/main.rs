@@ -9,6 +9,7 @@ use clap::{ Command, Arg, ArgAction };
 use pnet_datalink::interfaces;
 use generic_array::GenericArray;
 use chrono::{ TimeZone, offset::Local };
+use git_version::git_version;
 
 mod control;
 mod tcp;
@@ -140,7 +141,7 @@ impl Protocol {
     }
 }
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = git_version!(args = ["--tags"], fallback = env!("CARGO_PKG_VERSION"));
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
