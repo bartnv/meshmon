@@ -932,11 +932,8 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
                     break;
                 }
             };
+            if msg.is_close() { break; }
             println!("Received websocket message: {:?}", msg);
-            if msg.is_close() {
-                let _ = tx.send(Ok(Message::close()));
-                break;
-            }
         }
     });
 }
