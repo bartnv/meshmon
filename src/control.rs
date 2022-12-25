@@ -720,7 +720,7 @@ fn check_loss_port(result: &mut PingResult) {
             conseq += 1;
         }
         else {
-            if conseq >= 3 { losses -= conseq; }
+            if conseq > 2 { losses -= conseq; }
             conseq = 0;
         }
         if count == 3 && conseq == 3 {
@@ -729,6 +729,7 @@ fn check_loss_port(result: &mut PingResult) {
         }
         if count >= 100 { break; }
     }
+    if conseq > 2 { losses -= conseq; }
     if losses > 0 {
         result.losspct = (losses as f32/count as f32)*100.0;
     }
