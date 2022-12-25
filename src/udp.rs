@@ -144,7 +144,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                 for (name, node) in nodes.iter_mut() {
                     if node.rescan {
                         node.rescan = false;
-                        if debug { println!("Scanning node {} UDP ports", name); }
+                        if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Scanning node {} UDP ports", name))).await.unwrap(); }
                         let mut prev = String::new();
                         node.ports.sort_by(|a, b| a.ip.partial_cmp(&b.ip).unwrap());
                         for target in node.ports.iter_mut() {
@@ -158,9 +158,9 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                             !isprivate(ip) && variant_eq(&ip, &addr.ip()) { // or it's global and the same family
                                             let route = addr.ip().to_string();
                                             if route.starts_with("fe80::") { continue; } // Probably no point in using a link local route
-                                            if debug { println!("Sending UDP probe to {}:{} via {}", target.ip, target.port, route); }
+                                            if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Sending UDP probe to {}:{} via {}", target.ip, target.port, route))).await.unwrap(); }
                                             if !send_ping(&socks, &node.sbox, target, &route, true).await && debug {
-                                                eprintln!("Failed to send UDP probe to {}:{} via {}", target.ip, target.port, route);
+                                                ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP probe to {}:{} via {}", target.ip, target.port, route))).await.unwrap();
                                             }
                                         }
                                     }
@@ -182,7 +182,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     match target.state {
                                         PortState::New => { target.state = PortState::Init(0); },
                                         PortState::Init(_) if target.sent > 15 => {
-                                            if debug { println!("Node {} intf {} failed to initialize with 15 pings; giving up", name, target.ip); }
+                                            if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} intf {} failed to initialize with 15 pings; giving up", name, target.ip))).await.unwrap(); }
                                             target.sent = 0;
                                             target.usable = false;
                                         },
@@ -230,7 +230,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 target.waiting = true;
                             }
                             else if debug {
-                                eprintln!("Failed to send UDP ping to {}:{} via {}", target.ip, target.port, target.route);
+                                ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP ping to {}:{} via {}", target.ip, target.port, target.route))).await.unwrap();
                             }
                         }
                         if count > 15 { eprintln!("Node {} has {} unusable ports", name, count); }
@@ -244,26 +244,26 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                     UdpControl::Frame(name, local, remote, frame) => {
                         let res = nodes.get_mut(&name);
                         if res.is_none() {
-                            if debug { eprintln!("Received UDP packet from unknown node {} ({})", name, remote); }
+                            if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Received UDP packet from unknown node {} ({})", name, remote))).await.unwrap(); }
                             continue;
                         }
                         let node = res.unwrap();
                         let frame = match decrypt_frame(&node.sbox, &frame) {
                             Ok(plaintext) => plaintext,
                             Err(_) => { // SalsaBox errors are deliberately opaque to prevent information leakage
-                                eprintln!("Failed to decrypt UDP frame from node {} ({})", name, remote);
+                                ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to decrypt UDP frame from node {} ({})", name, remote))).await.unwrap();
                                 continue;
                             }
                         };
                         let result: Result<Protocol, DecodeError> = rmp_serde::from_slice(&frame);
                         if let Err(ref e) = result {
-                            eprintln!("Deserialization error in UDP frame from {}: {:?}", remote, e);
+                            ctrltx.send(Control::Log(LogLevel::Debug, format!("Deserialization error in UDP frame from {}: {:?}", remote, e))).await.unwrap();
                             continue;
                         }
 
                         let res = socks.get(&local.ip().to_string());
                         if res.is_none() {
-                            eprintln!("Failed to find local UDP socket for port {}", local);
+                            ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to find local UDP socket for port {}", local))).await.unwrap();
                             continue;
                         }
                         let sock = res.unwrap();
@@ -274,14 +274,14 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let mut port = match res {
                             Some(port) => port,
                             None => {
-                                if debug { println!("Learned new port {} for node {} with route {}", remote, name, route); }
+                                if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Learned new port {} for node {} with route {}", remote, name, route))).await.unwrap(); }
                                 node.ports.push(PingPort::from(&remote.to_string(), Some(route), true));
                                 node.ports.last_mut().unwrap()
                             }
                         };
 
                         if remote.port() != port.port {
-                            if debug { println!("Node {} ip {} moved from port {} to {}", name, remoteip, port.port, remote.port()); }
+                            if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} ip {} moved from port {} to {}", name, remoteip, port.port, remote.port()))).await.unwrap(); }
                             port.port = remote.port();
                         }
 
@@ -292,22 +292,22 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     _ => build_frame(&node.sbox, Protocol::Pong { value, source: String::new() })
                                 };
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
-                                    eprintln!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e);
+                                    ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e))).await.unwrap();
                                 }
                                 if !port.usable || port.state > PortState::Loss(0) {
                                     if !send_ping(&socks, &node.sbox, port, &port.route, true).await && debug {
-                                        eprintln!("Failed to send UDP probe to {}:{} via {}", port.ip, port.port, port.route);
+                                        ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP probe to {}:{} via {}", port.ip, port.port, port.route))).await.unwrap();
                                     }
                                 }
                             },
                             Protocol::Pong { value, source } => {
                                 if !port.usable {
                                     port.usable = true;
-                                    if debug { println!("Marked {} as pingable via {}", port.ip, port.route); }
+                                    if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Marked {} as pingable via {}", port.ip, port.route))).await.unwrap(); }
                                 }
                                 if port.waiting { port.waiting = false; }
                                 if !source.is_empty() && source != port.route && (port.external.is_none() || *port.external.as_ref().unwrap() != source) {
-                                    if debug { println!("Learned external (NAT) address for route {}: {}", &port.route, &source) }
+                                    if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Learned external (NAT) address for route {}: {}", &port.route, &source))).await.unwrap(); }
                                     port.external = Some(source);
                                 }
                                 if value != 0 { // Probe pings have a zero value so don't provide a round-trip time
@@ -338,7 +338,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                             },
                             p => {
-                                eprintln!("Received unexpected protocol message {:?} from {}", p, remote);
+                                ctrltx.send(Control::Log(LogLevel::Debug, format!("Received unexpected protocol message {:?} from {}", p, remote))).await.unwrap();
                             }
                         }
                     }
@@ -348,29 +348,25 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                 match res.expect("Control task has crashed; exiting...") {
                     Control::ScanNode(name, external) => {
                         let config = config.read().unwrap();
-                        let node = match config.nodes.iter().find(|i| i.name == name) {
-                            Some(node) => node,
-                            None => {
-                                eprintln!("Received Control::ScanNode for nonexisting node {}", name);
-                                continue;
-                            }
-                        };
-                        match nodes.get_mut(&name) {
-                            Some(pingnode) => {
-                                pingnode.rescan = true;
-                                pingnode.notify = !external;
-                                for port in &node.listen {
-                                    if pingnode.has_port(port) { continue; }
-                                    pingnode.ports.push(PingPort::from(port, None, false));
+                        if let Some(node) = config.nodes.iter().find(|i| i.name == name) {
+                            match nodes.get_mut(&name) {
+                                Some(pingnode) => {
+                                    pingnode.rescan = true;
+                                    pingnode.notify = !external;
+                                    for port in &node.listen {
+                                        if pingnode.has_port(port) { continue; }
+                                        pingnode.ports.push(PingPort::from(port, None, false));
+                                    }
+                                },
+                                None => {
+                                    nodes.insert(name, PingNode::from(&config.runtime, node, &mut cohort));
                                 }
-                            },
-                            None => {
-                                nodes.insert(name, PingNode::from(&config.runtime, node, &mut cohort));
                             }
+                            continue;
                         }
                     },
                     c => {
-                        println!("Received Control message {:?}", c);
+                        ctrltx.send(Control::Log(LogLevel::Debug, format!("Received unexpected Control message {:?}", c))).await.unwrap();
                     }
                 }
             }
@@ -383,23 +379,20 @@ async fn udpreader(port: SocketAddr, sock: Arc<net::UdpSocket>, readtx: sync::mp
     loop {
         match sock.recv_from(&mut buf).await {
             Ok((len, addr)) => {
-                // println!("Received {} bytes on {} from {}", len, port, addr);
-                if len < 2 { eprintln!("Short UDP message from {}", addr); continue; }
+                if len < 2 { continue; } // UDP message too short
                 let framelen = (buf[1] as usize) << 8 | buf[0] as usize; // len is little-endian
-                if len < framelen+2 { eprintln!("Short UDP message from {}", addr); continue; }
+                if len < framelen+2 { continue; } // UDP message too short
                 let res = buf.iter().skip(2).position(|x| *x == 0); // name is null-terminated
-                if res.is_none() { eprintln!("Invalid UDP message from {}", addr); continue; }
+                if res.is_none() { continue; } // Name field not found
                 let (bytes, payload) = buf[2..framelen+2].split_at(res.unwrap());
                 let name = String::from_utf8(bytes.to_vec());
-                if name.is_err() { eprintln!("Invalid name in UDP message from {}", addr); continue; }
+                if name.is_err() { continue; } // Name is not valid UTF8
                 let mut frame = Vec::new();
                 frame.extend_from_slice(&payload[1..]);
-                if let Err(e) = readtx.send(UdpControl::Frame(name.unwrap(), port, addr, frame)).await {
-                    eprintln!("MPSC channel error: {}", e);
-                }
+                readtx.send(UdpControl::Frame(name.unwrap(), port, addr, frame)).await.expect("UDP task has crashed; exiting...");
             },
             Err(e) => {
-                eprintln!("UDP error: {}", e);
+                eprintln!("UDP recv error: {}", e);
             }
         }
     }
@@ -432,7 +425,6 @@ async fn send_ping(socks: &HashMap<String, Arc<net::UdpSocket>>, sbox: &Option<S
     sock.send_to(&frame, (target.ip.as_ref(), target.port)).await.is_ok()
 }
 fn build_frame(sbox: &Option<SalsaBox>, proto: Protocol) -> Vec<u8> {
-    // println!("Sending {:?}", proto);
     let payload = match sbox {
         Some(sbox) => encrypt_frame(sbox, &rmp_serde::to_vec(&proto).unwrap()),
         None => rmp_serde::to_vec(&proto).unwrap()
