@@ -10,6 +10,7 @@ use pnet_datalink::interfaces;
 use generic_array::GenericArray;
 use chrono::{ TimeZone, offset::Local };
 use git_version::git_version;
+use termion::event::Key;
 
 mod control;
 mod tcp;
@@ -104,7 +105,8 @@ pub enum Control {
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
     Result(String, String, String, u16), // Node name, interface address, port, rtt
     Log(LogLevel, String), // Status update
-    Path(String, String, String, String, String, u8) // Peer name, from name, to name, from intf, to intf, losspct
+    Path(String, String, String, String, String, u8), // Peer name, from name, to name, from intf, to intf, losspct
+    InputKey(Key) // Termion key event from tty stdin
 }
 
 // The wire protocol, sent in serialized form over the tcp connection between nodes
@@ -162,7 +164,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .arg(Arg::new("web").short('w').long("web").help("Start HTTP server on this <address:port>"))
             .arg(Arg::new("tui").short('t').long("tui").action(ArgAction::SetTrue).help("Activate the interactive terminal user-interface"))
             .arg(Arg::new("results").long("results").action(ArgAction::SetTrue).help("Log individual ping results"))
-            .arg(Arg::new("debug").long("debug").action(ArgAction::SetTrue).help("Verbose logging").conflicts_with("tui"))
+            .arg(Arg::new("debug").long("debug").action(ArgAction::SetTrue).help("Verbose logging"))
         );
     let args = app.get_matches();
     let config: Arc<RwLock<Config>>;
@@ -338,7 +340,7 @@ pub fn timestamp() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 pub fn timestamp_from(ts: u64) -> String {
-    Local.timestamp_opt(ts as i64, 0).unwrap().to_string()
+    Local.timestamp_opt(ts as i64, 0).unwrap().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn variant_eq<T>(a: &T, b: &T) -> bool {

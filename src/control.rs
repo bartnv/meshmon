@@ -2,7 +2,7 @@ use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque 
 use tokio::{ fs, sync };
 use futures_util::{ FutureExt, stream::StreamExt };
 use petgraph::{ graph, graph::UnGraph, data::FromElements, algo };
-use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen };
+use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen, screen::AlternateScreen, raw::RawTerminal, input::TermRead, event::Key };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
@@ -175,6 +175,16 @@ impl PartialEq for Path {
     }
 }
 
+fn start_tui(data: Arc<Data>) -> Option<Terminal<TermionBackend<AlternateScreen<RawTerminal<std::io::Stdout>>>>> {
+    let stdout = std::io::stdout().into_raw_mode().unwrap();
+    let stdout = stdout.into_alternate_screen().unwrap();
+    let backend = TermionBackend::new(stdout);
+    let mut term = Terminal::new(backend).unwrap();
+    term.clear().unwrap();
+    term.draw(|f| draw(f, data)).unwrap();
+    Some(term)
+}
+
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>, web: Option<std::net::SocketAddr>) {
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
@@ -208,19 +218,22 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
 
     let mut term = match aconfig.read().unwrap().runtime.read().unwrap().tui {
         false => None,
-        true => {
-            let stdout = std::io::stdout().into_raw_mode().unwrap();
-            let stdout = stdout.into_alternate_screen().unwrap();
-            let backend = TermionBackend::new(stdout);
-            Some(Terminal::new(backend).unwrap())
-        }
+        true => start_tui(data.clone())
     };
-    if let Some(ref mut term) = term {
-        term.clear().unwrap();
-        term.draw(|f| draw(f, data.clone())).unwrap();
-    }
-    let mut lastsymbol = 64;
+    let stdintx = ctrltx.clone();
+    tokio::task::spawn_blocking(move || { // Thread to wait for input events
+        let stdin = std::io::stdin();
+        let mut keys = stdin.keys();
+        while let Some(event) = keys.next() {
+            match event {
+                Ok(key) => tokio::runtime::Runtime::new().unwrap().block_on(stdintx.send(Control::InputKey(key))).unwrap(),
+                Err(e) => eprintln!("Error: {}", e)
+            }
+            
+        }
+    });
 
+    let mut lastsymbol = 64;
     let mut redraw;
     let mut ticks: u32 = 0;
     loop {
@@ -571,6 +584,16 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     let protocol = Protocol::Path { from, to, fromintf, tointf, losspct };
                     relaymsgs.push((peer, protocol, false));
                 }
+            },
+            Control::InputKey(key) => {
+                if key == Key::Char('t') {
+                    if let Some(mut terminal) = term {
+                        terminal.clear().unwrap();
+                        term = None;
+                    }
+                    else { term = start_tui(data.clone()); }
+                }
+                else { logmsgs.push((LogLevel::Info, format!("Received key: {:?}", key))); }
             },
             _ => {
                 panic!("Received unexpected Control message on control task");
