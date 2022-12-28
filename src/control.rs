@@ -1,6 +1,6 @@
 use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque }, cmp::Ordering, net::SocketAddr };
 use tokio::{ fs, sync };
-use futures_util::{ FutureExt, stream::StreamExt };
+use futures_util::stream::StreamExt;
 use petgraph::{ graph, graph::UnGraph, data::FromElements, algo };
 use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen, screen::AlternateScreen, raw::RawTerminal, input::TermRead, event::Key };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
@@ -875,7 +875,6 @@ fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
 
 async fn upgrade_websocket(ws: warp::ws::Ws, addr: Option<SocketAddr>, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<impl warp::Reply, warp::Rejection> {
     if addr.is_none() { return Err(warp::reject::reject()); }
-    println!("Accepted websocket request from {}", addr.unwrap());
     Ok(ws.on_upgrade(move |socket| handle_websocket(socket, config, data)))
 }
 
@@ -910,9 +909,7 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
     let (ws_tx, mut ws_rx) = ws.split();
     let (tx, rx) = sync::mpsc::unbounded_channel();
     let rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-    tokio::spawn(rx.forward(ws_tx).map(|result| {
-        if let Err(e) = result { println!("Error sending websocket message: {}", e); }
-    }));
+    tokio::spawn(rx.forward(ws_tx));
 
     {
         let config = config.read().unwrap();
@@ -950,10 +947,7 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
         while let Some(result) = ws_rx.next().await {
             let msg = match result {
                 Ok(msg) => msg,
-                Err(e) => {
-                    println!("Error receiving websocket message: {}", e);
-                    break;
-                }
+                Err(_) => break
             };
             if msg.is_close() { break; }
             println!("Received websocket message: {:?}", msg);
