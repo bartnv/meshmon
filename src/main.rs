@@ -239,7 +239,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let config = config.clone();
                     if debug {
                         let text = format!("Incoming connection from {} to {}", addr, socket.local_addr().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap()));
-                        ctrltx.send(Control::Log(LogLevel::Info, text)).await.unwrap();
+                        ctrltx.send(Control::Log(LogLevel::Debug, text)).await.unwrap();
                     }
                     tokio::spawn(async move {
                         tcp::run(config, socket, ctrltx, false, learn).await;

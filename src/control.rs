@@ -762,9 +762,10 @@ fn check_loss_port(result: &mut PingResult) {
 }
 
 fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
+    let resultssize = match data.results.read().unwrap().len() { 0 => 3, n => n+2 } as u16;
     let vert1 = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50) ].as_ref())
+        .constraints([Constraint::Min(10), Constraint::Length(resultssize) ].as_ref())
         .split(f.size());
     let hori = Layout::default()
         .direction(Direction::Horizontal)
@@ -842,6 +843,7 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
         }
         content.push(ListItem::new(Spans::from(line)));
     }
+    if content.is_empty() { content.push(ListItem::new("No results yet")); }
     let list = List::new(content).block(block).start_corner(Corner::TopLeft);
     f.render_widget(list, vert1[1]);
 }
