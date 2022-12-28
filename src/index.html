@@ -18,7 +18,12 @@
       setStatus('Connected', 'white', 'green');
     };
     socket.onmessage = function(event) {
-      const data = JSON.parse(event.data);
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch(e) {
+        console.log(`Failed to parse JSON (${e.message}): ${event.data}`);
+      }
       console.log('Received ' + data.msg + ' message', data);
       switch (data.msg) {
         case 'init':
