@@ -748,7 +748,7 @@ fn check_loss_port(result: &mut PingResult) {
         }
         if count == 3 && conseq == 3 {
             result.losspct = 100.0;
-            break;
+            return;
         }
         if count >= 100 { break; }
     }
