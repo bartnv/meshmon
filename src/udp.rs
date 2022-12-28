@@ -1,6 +1,6 @@
 use std::{ str, time::{ Duration, Instant }, net::{ SocketAddr, IpAddr }, default::Default, sync::RwLock, sync::Arc, collections::{ HashMap, VecDeque }, convert::TryInto };
 use crypto_box::{ PublicKey, SalsaBox};
-use serde_derive::{ Deserialize, Serialize };
+use serde::{ Deserialize, Serialize };
 use rmp_serde::decode::Error as DecodeError;
 use tokio::{ net, sync };
 use ipnetwork::{ IpNetwork, Ipv6Network };

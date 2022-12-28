@@ -38,7 +38,8 @@
           if (data.log.length) $('#log').prop('scrollTop', $('#log').height());
           break;
         case 'log':
-          addLogMsg([ data.ts, data.text ]);
+          addLogMsg(data);
+          $('#log').prop('scrollTop', $('#log').height());
           break;
         case 'newlink':
           addLink(data);
@@ -148,9 +149,9 @@
     path.el?.attr('stroke-dasharray', 70-gap + ' ' + gap);
   }
   function addLogMsg(entry) {
-    let ts = parseInt(entry[0]);
+    let ts = parseInt(entry.ts);
     let date = new Date(ts * 1000);
-    $('#log').append(date.toISOString().substring(0, 16).replace('T', ' ') + ' ' + entry[1] + '<br>');
+    $('#log').append(date.toISOString().substring(0, 16).replace('T', ' ') + ' ' + entry.text + '<br>');
   }
   function setStatus(text, fg, bg) {
     $('#status').text(text).css({ color: fg, backgroundColor: bg });

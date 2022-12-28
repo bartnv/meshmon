@@ -1,7 +1,7 @@
 // #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use crypto_box::{ aead::Aead, aead::AeadCore, PublicKey, SecretKey, SalsaBox};
 use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto };
-use serde_derive::{ Deserialize, Serialize };
+use serde::{ Deserialize, Serialize };
 use tokio::{ fs, net, sync };
 use sysinfo::{ SystemExt };
 use petgraph::graph::UnGraph;

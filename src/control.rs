@@ -7,7 +7,7 @@ use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Blo
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
 use warp::{ Filter, ws::Message };
-use serde_derive::Serialize;
+use serde::Serialize;
 use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, timestamp_from };
 
 static HISTSIZE: usize = 1440;
@@ -659,15 +659,21 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         if !logmsgs.is_empty() {
             for (level, text) in logmsgs.drain(..) {
                 if level == LogLevel::Debug && !debug { continue; }
-                if level != LogLevel::Debug { data.push_log(unixtime(), text.clone()); }
+                if level != LogLevel::Debug {
+                    data.push_log(unixtime(), text.clone());
+                    let config = aconfig.read().unwrap();
+                    let mut runtime = config.runtime.write().unwrap();
+                    if !runtime.wsclients.is_empty() {
+                        let json = serde_json::json!({
+                            "msg": "log",
+                            "ts": unixtime(),
+                            "text": text
+                        }).to_string();
+                        runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                    }
+                }
                 if term.is_none() { println!("{} {}", timestamp(), text); }
                 else { redraw = true; }
-                let config = aconfig.read().unwrap();
-                let mut runtime = config.runtime.write().unwrap();
-                if !runtime.wsclients.is_empty() {
-                    let json = format!("{{ \"msg\": \"log\", \"ts\": {}, \"text\": \"{}\" }}", unixtime(), text);
-                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
-                }
             }
         }
 
@@ -887,7 +893,7 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
         nodes: Vec<JsonNode>,
         edges: Vec<JsonEdge>,
         paths: Vec<JsonPath>,
-        log: Vec<(u64, String)>
+        log: Vec<JsonLog>
     }
     #[derive(Serialize)]
     struct JsonNode {
@@ -906,6 +912,11 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
         toname: String,
         tointf: String,
         losspct: u8
+    }
+    #[derive(Serialize)]
+    struct JsonLog {
+        ts: u64,
+        text: String
     }
 
     let (ws_tx, mut ws_rx) = ws.split();
@@ -932,7 +943,7 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
         drop(runtime);
         let log = data.log.read().unwrap();
         for (ts, msg) in log.iter() {
-            res.log.push((*ts, msg.clone()));
+            res.log.push(JsonLog { ts: *ts, text: msg.clone() });
         }
         let results = data.results.read().unwrap();
         for result in results.iter() {
