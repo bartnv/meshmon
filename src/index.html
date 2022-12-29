@@ -1,7 +1,8 @@
 <!doctype html>
 <html>
 <head>
-<script src="https://cdn.jsdelivr.net/npm/jquery@3.6.1/dist/jquery.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
 <script>
   'use strict';
@@ -149,9 +150,8 @@
     path.el?.attr('stroke-dasharray', 70-gap + ' ' + gap);
   }
   function addLogMsg(entry) {
-    let ts = parseInt(entry.ts);
-    let date = new Date(ts * 1000);
-    $('#log').append(date.toISOString().substring(0, 16).replace('T', ' ') + ' ' + entry.text + '<br>');
+    let ts = dayjs.unix(entry.ts);
+    $('#log').append(ts.format('YYYY-MM-DD HH:mm:ss') + ' ' + entry.text + '<br>');
   }
   function setStatus(text, fg, bg) {
     $('#status').text(text).css({ color: fg, backgroundColor: bg });
