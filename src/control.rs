@@ -13,6 +13,7 @@ use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, tim
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
 static INDEX_FILE: &str = include_str!("index.html");
+static ICON_FILE: &[u8] = include_bytes!("../favicon.ico");
 
 trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
@@ -205,6 +206,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         let data = data.clone();
         tokio::spawn(async move {
             let index = warp::path::end().map(|| warp::reply::html(INDEX_FILE));
+            let icon = warp::path("favicon.ico").map(|| ICON_FILE);
             let websocket = warp::path("ws")
                        .and(warp::ws())
                        .and(warp::addr::remote())
@@ -212,7 +214,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                        .and(warp::any().map(move || data.clone()))
                        .and_then(upgrade_websocket)
                        .with(warp::cors().allow_any_origin());
-            warp::serve(index.or(websocket)).run(sa).await;
+            warp::serve(index.or(icon).or(websocket)).run(sa).await;
         });
     }
 
