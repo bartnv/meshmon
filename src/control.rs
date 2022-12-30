@@ -228,7 +228,10 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         let mut keys = stdin.keys();
         while let Some(event) = keys.next() {
             match event {
-                Ok(key) => tokio::runtime::Runtime::new().unwrap().block_on(stdintx.send(Control::InputKey(key))).unwrap(),
+                Ok(key) => match tokio::runtime::Runtime::new().unwrap().block_on(stdintx.send(Control::InputKey(key))) {
+                    Ok(_) => (),
+                    Err(_) => break
+                },
                 Err(e) => eprintln!("Error: {}", e)
             }
             
@@ -588,14 +591,18 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
             },
             Control::InputKey(key) => {
-                if key == Key::Char('t') {
-                    if let Some(mut terminal) = term {
-                        terminal.clear().unwrap();
-                        term = None;
-                    }
-                    else { term = start_tui(data.clone()); }
+                match key {
+                    Key::Char('t') => {
+                        if let Some(mut terminal) = term {
+                            terminal.clear().unwrap();
+                            term = None;
+                        }
+                        else { term = start_tui(data.clone()); }
+                    },
+                    Key::Char('q') => return,
+                    Key::Char('\n') => continue,
+                    _ => { logmsgs.push((LogLevel::Info, format!("Received key: {:?}", key))); }
                 }
-                else { logmsgs.push((LogLevel::Info, format!("Received key: {:?}", key))); }
             },
             _ => {
                 panic!("Received unexpected Control message on control task");
