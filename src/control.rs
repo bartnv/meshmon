@@ -951,7 +951,7 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
         }
         drop(runtime);
         let log = data.log.read().unwrap();
-        for (ts, msg) in log.iter() {
+        for (ts, msg) in log.iter().rev() {
             res.log.push(JsonLog { ts: *ts, text: msg.clone() });
         }
         let results = data.results.read().unwrap();
