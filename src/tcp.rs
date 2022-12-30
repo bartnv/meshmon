@@ -359,12 +359,12 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         }
     } // End of select! loop
 
-    {
+    if conn.state >= ConnState::Introduced {
+        ctrltx.send(Control::DropPeer(conn.nodename.clone())).await.unwrap();
         let mut config = config.write().unwrap();
         let res = config.nodes.iter_mut().find(|node| node.name == conn.nodename);
         if let Some(node) = res { node.connected = false; }
     }
-    ctrltx.send(Control::DropPeer(conn.nodename)).await.unwrap();
 }
 
 pub async fn connect_node(config: Arc<RwLock<Config>>, control: sync::mpsc::Sender<Control>, ports: Vec<String>, learn: bool) {
