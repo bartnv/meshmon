@@ -8,13 +8,14 @@
   'use strict';
 
   let app = {};
+  // navigator.serviceWorker.register('sw.js');
 
   $().ready(function() {
     setupWebsocket();
     setInterval(function() { if (!socket || socket.readyState == 3) setupWebsocket(); }, 30000);
   });
   function setupWebsocket() {
-    window.socket = new WebSocket('ws://hs1.mmvi.nl:8041/ws');
+    window.socket = new WebSocket('ws://' + location.host + '/ws');
     socket.onopen = function () {
       setStatus('Connected', 'white', 'green');
     };
