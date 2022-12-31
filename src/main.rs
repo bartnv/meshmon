@@ -69,7 +69,7 @@ impl Connection {
     fn new(nodename: String) -> Connection {
         Connection {
             nodename,
-            lastdata: Instant::now(),
+            lastdata: Instant::now()-Duration::new(90, 0), // Set lastdata back 90 seconds to we time out new idle connections quickly
             state: ConnState::New,
             pubkey: None,
             seq: 0
