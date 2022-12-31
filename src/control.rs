@@ -12,8 +12,8 @@ use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, tim
 
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
-static INDEX_FILE: &str = include_str!("index.html");
-static ICON_FILE: &[u8] = include_bytes!("../favicon.ico");
+static INDEX_FILE: &str = include_str!("../web/index.html");
+static ICON_FILE: &[u8] = include_bytes!("../web/favicon.ico");
 
 trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
