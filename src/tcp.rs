@@ -35,6 +35,10 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
         tokio::select!{
             _ = interval.tick() => {
                 let idle = conn.lastdata.elapsed().as_secs();
+                if conn.state == ConnState::New && idle >= 9 {
+                    if debug { control.push(Control::Log(LogLevel::Status, format!("Connection from {} closed (intro timeout)", conn.nodename))); }
+                    break;
+                }
                 if idle > 89 {
                     if debug { control.push(Control::Log(LogLevel::Status, format!("Connection with {} lost", conn.nodename))); }
                     break;
