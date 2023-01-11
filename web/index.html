@@ -15,7 +15,7 @@
     setInterval(function() { if (!socket || socket.readyState == 3) setupWebsocket(); }, 30000);
   });
   function setupWebsocket() {
-    window.socket = new WebSocket('ws://' + location.host + '/ws');
+    window.socket = new WebSocket(location.protocol.replace('http', 'ws') + '//' + location.host + '/ws');
     socket.onopen = function () {
       setStatus('Connected', 'white', 'green');
     };

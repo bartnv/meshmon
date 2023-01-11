@@ -6,7 +6,8 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = [ "full" ] }
-tokio-stream = "*"
+tokio-util = { version = "*", features = [ "compat" ] }
+tokio-stream = { version = "*", features = [ "net" ] }
 futures-util = "*"
 toml = "0"
 base64 = "0"
@@ -23,12 +24,14 @@ clap = "4"
 pnet = "0"
 pnet_datalink = "0"
 ipnetwork = "0"
-warp = { version = "0.3", features = ["default", "tls"] }
+hyper = { version = "*", features = [ "http1", "runtime", "server" ] }
+hyper-tungstenite = "*"
 lazy_static = "1"
 tui = { version = "0.19", default-features = false, features = ['termion'] }
 termion = "2"
 chrono = "0"
 git-version = "*"
+rustls-acme = { version = "*", features = [ "tokio" ] }
 
 [profile.release]
 strip = true

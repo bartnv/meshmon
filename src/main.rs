@@ -1,8 +1,9 @@
 // #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use crypto_box::{ aead::Aead, aead::AeadCore, PublicKey, SecretKey, SalsaBox};
 use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto };
 use serde::{ Deserialize, Serialize };
-use tokio::{ fs, net, sync };
+use tokio::{ fs, net, sync::mpsc };
+use hyper_tungstenite::tungstenite;
+use crypto_box::{ aead::Aead, aead::AeadCore, PublicKey, SecretKey, SalsaBox};
 use sysinfo::{ SystemExt };
 use petgraph::graph::UnGraph;
 use clap::{ Command, Arg, ArgAction };
@@ -49,7 +50,7 @@ struct Runtime {
     sysinfo: Option<sysinfo::System>,
     graph: UnGraph<String, u32>,
     msp: UnGraph<String, u32>,
-    wsclients: Vec<sync::mpsc::UnboundedSender<Result<warp::ws::Message, warp::Error>>>,
+    wsclients: Vec<mpsc::UnboundedSender<Result<tungstenite::Message, tungstenite::Error>>>,
     connseq: u32,
     acceptnewnodes: bool,
     tui: bool,
@@ -94,7 +95,7 @@ pub enum LogLevel {
 pub enum Control {
     Tick,
     Round(u64), // Ping round number
-    NewPeer(String, sync::mpsc::Sender<Control>, bool), // Node name, channel (for control messages to the TCP task), report (whether to send paths to peer)
+    NewPeer(String, mpsc::Sender<Control>, bool), // Node name, channel (for control messages to the TCP task), report (whether to send paths to peer)
     DropPeer(String), // Node name
     NewLink(String, String, String, u32), // Sender name, link from, link to, link seqno
     DropLink(String, String, String), // Sender name, link from, link to
@@ -206,23 +207,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.tui = args.get_flag("tui");
         runtime.results = args.get_flag("results");
         runtime.debug = args.get_flag("debug");
-        runtime.sysinfo = Some(sysinfo::System::new_all());
-        runtime.sysinfo.as_mut().unwrap().refresh_all();
+        runtime.sysinfo = Some(sysinfo::System::new_with_specifics(sysinfo::RefreshKind::new()));
         runtime.graph.add_node(config.name.clone());
         println!("Local listen ports: {}", runtime.listen.join(", "));
         println!("My pubkey is {}", base64::encode(runtime.pubkey.as_ref().unwrap().as_bytes()));
     }
 
-    // Pass the SocketAddr for the http server to the control task if the --web argument is passed
-    let web: Option<std::net::SocketAddr> = match args.get_one::<String>("web") {
-        None => None,
-        Some(port) => {
-            println!("Starting http server on {}", port);
-            Some(port.parse().expect("--web option did not contain a valid ip:port value"))
-        }
-    };
-
-    let (ctrltx, ctrlrx) = sync::mpsc::channel(10); // Channel used to send updates to the control task
+    let (ctrltx, ctrlrx) = mpsc::channel(10); // Channel used to send updates to the control task
 
     // TCP listen ports; accept connections and spawn tasks to run the TCP protocol on them
     let learn = config.read().unwrap().runtime.read().unwrap().acceptnewnodes;
@@ -250,7 +241,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // UDP listener
-    let (udptx, udprx) = sync::mpsc::channel(10); // Channel used to send messages to the UDP task
+    let (udptx, udprx) = mpsc::channel(10); // Channel used to send messages to the UDP task
     {
         let config = config.clone();
         let ctrltx = ctrltx.clone();
@@ -283,6 +274,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Control task; handles coordinating jobs
     let aconfig = config.clone();
+    let web = args.get_one::<String>("web").map(|s| s.to_string());
     let control = tokio::spawn(async move {
         control::run(aconfig, ctrlrx, ctrltx, udptx, web).await;
     });

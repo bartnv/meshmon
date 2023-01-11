@@ -1,12 +1,16 @@
-use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque }, cmp::Ordering, net::SocketAddr };
-use tokio::{ fs, sync };
+use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque }, cmp::Ordering };
+use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
+use tokio::{ fs, sync, net::TcpListener };
+use tokio_stream::{ wrappers::TcpListenerStream };
 use futures_util::stream::StreamExt;
 use petgraph::{ graph, graph::UnGraph, data::FromElements, algo };
 use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen, screen::AlternateScreen, raw::RawTerminal, input::TermRead, event::Key };
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use warp::{ Filter, ws::Message };
+use hyper::{Body, Request, Response };
+use hyper::service::service_fn;
+use rustls_acme::{ AcmeConfig, caches::DirCache };
 use serde::Serialize;
 use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, timestamp_from };
 
@@ -186,7 +190,7 @@ fn start_tui(data: Arc<Data>) -> Option<Terminal<TermionBackend<AlternateScreen<
     Some(term)
 }
 
-pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>, web: Option<std::net::SocketAddr>) {
+pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>, web: Option<String>) {
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
     let (myname, results, debug) = {
@@ -201,21 +205,28 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let mut logmsgs: Vec<(LogLevel, String)> = vec![];
     let data: Arc<Data> = Arc::new(Default::default());
 
-    if let Some(sa) = web {
-        let config = aconfig.clone();
-        let data = data.clone();
-        tokio::spawn(async move {
-            let index = warp::path::end().map(|| warp::reply::html(INDEX_FILE));
-            let icon = warp::path("favicon.ico").map(|| ICON_FILE);
-            let websocket = warp::path("ws")
-                       .and(warp::ws())
-                       .and(warp::addr::remote())
-                       .and(warp::any().map(move || config.clone()))
-                       .and(warp::any().map(move || data.clone()))
-                       .and_then(upgrade_websocket)
-                       .with(warp::cors().allow_any_origin());
-            warp::serve(index.or(icon).or(websocket)).run(sa).await;
-        });
+    if let Some(arg) = web {
+        if let Ok(sa) = arg.parse::<std::net::SocketAddr>() {
+            let config = aconfig.clone();
+            let data = data.clone();
+            tokio::spawn(async move {
+                let http = hyper::server::conn::Http::new();
+                let service = service_fn(move |req| {
+                    handle_http(req, config.clone(), data.clone())
+                });
+                let tcp_listener = TcpListener::bind(sa).await.unwrap();
+                println!("Started HTTP server on {}", arg);
+                while let Ok((stream, _)) = tcp_listener.accept().await {
+                    let conn = http.serve_connection(stream, service.clone()).with_upgrades();
+                    tokio::spawn(async move {
+                        if let Err(e) = conn.await {
+                            eprintln!("Error: {e}");
+                        }
+                    });
+                }
+            });
+        }
+        else { eprintln!("--web option did not contain a valid ip:port value"); }
     }
 
     let mut term = match aconfig.read().unwrap().runtime.read().unwrap().tui {
@@ -466,12 +477,12 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         directmsgs.push((name.clone(), Protocol::Path { from: path.from.clone(), to: path.to.clone(), fromintf: path.fromintf.clone(), tointf: path.tointf.clone(), losspct: path.losspct }));
                     }
                 }
-                // let config = aconfig.read().unwrap();
-                // let mut runtime = config.runtime.write().unwrap();
-                // if !runtime.wsclients.is_empty() {
-                //     let json = format!("{{ \"msg\": \"newlink\", \"from\": \"{}\", \"to\": \"{name}\", \"mode\": \"unknown\" }}", myname.clone());
-                //     runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
-                // }
+                let config = aconfig.read().unwrap();
+                let mut runtime = config.runtime.write().unwrap();
+                if !runtime.wsclients.is_empty() {
+                    let json = format!("{{ \"msg\": \"newlink\", \"from\": \"{}\", \"to\": \"{name}\", \"mode\": \"unknown\" }}", myname.clone());
+                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                }
             },
             Control::DropPeer(name) => {
                 peers.remove(&name);
@@ -890,12 +901,31 @@ fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
     return Span::styled("^", (*STYLES.last().unwrap()).fg(Color::Black));
 }
 
-async fn upgrade_websocket(ws: warp::ws::Ws, addr: Option<SocketAddr>, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<impl warp::Reply, warp::Rejection> {
-    if addr.is_none() { return Err(warp::reject::reject()); }
-    Ok(ws.on_upgrade(move |socket| handle_websocket(socket, config, data)))
+// async fn upgrade_websocket(ws: warp::ws::Ws, addr: Option<SocketAddr>, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<impl warp::Reply, warp::Rejection> {
+//     if addr.is_none() { return Err(warp::reject::reject()); }
+//     Ok(ws.on_upgrade(move |socket| handle_websocket(socket, config, data)))
+// }
+
+async fn handle_http(mut request: Request<Body>, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    if hyper_tungstenite::is_upgrade_request(&request) {
+        let (response, websocket) = hyper_tungstenite::upgrade(&mut request, None)?;
+        tokio::spawn(async move {
+            if let Err(e) = handle_websocket(websocket, config, data).await {
+                eprintln!("Error in websocket connection: {}", e);
+            }
+        });
+        Ok(response)
+    } else {
+        match request.uri().path() {
+            "/" => Ok(Response::new(Body::from(INDEX_FILE))),
+            "/favicon.ico" => Ok(Response::new(Body::from(ICON_FILE))),
+            _ => Ok(Response::builder().status(hyper::StatusCode::NOT_FOUND).body(Body::empty()).unwrap())
+        }
+    }
+
 }
 
-async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, data: Arc<Data>) {
+async fn handle_websocket(ws: HyperWebsocket, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     #[derive(Default, Serialize)]
     struct JsonGraph {
         msg: &'static str,
@@ -928,16 +958,17 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
         text: String
     }
 
-    let (ws_tx, mut ws_rx) = ws.split();
+    let (ws_tx, mut ws_rx) = ws.await?.split();
     let (tx, rx) = sync::mpsc::unbounded_channel();
     let rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
     tokio::spawn(rx.forward(ws_tx));
 
+    let mut res = JsonGraph { msg: "init", ..Default::default() };
     {
         let config = config.read().unwrap();
         let mut runtime = config.runtime.write().unwrap();
         runtime.wsclients.push(tx.clone());
-        let mut res = JsonGraph { msg: "init", ..Default::default() };
+
         let nodes = runtime.graph.raw_nodes();
         for node in nodes.iter() {
             res.nodes.push(JsonNode { name: node.weight.clone() });
@@ -962,17 +993,51 @@ async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, 
         for path in pathcache.iter() {
             res.paths.push(JsonPath { fromname: path.from.clone(), fromintf: path.fromintf.clone(), toname: path.to.clone(), tointf: path.tointf.clone(), losspct: path.losspct });
         }
-        tx.send(Ok(Message::text(serde_json::to_string(&res).unwrap()))).expect("Failed to send network graph to websocket");
+    }
+    tx.send(Ok(Message::text(serde_json::to_string(&res).unwrap())))?;
+
+    while let Some(message) = ws_rx.next().await {
+        match message? {
+            Message::Text(msg) => {
+                println!("Received text message: {}", msg);
+            },
+            Message::Binary(msg) => {
+                println!("Received binary message: {:02X?}", msg);
+            },
+            Message::Ping(msg) => {
+                println!("Received websocket ping message: {:02X?}", msg);
+            },
+            Message::Pong(msg) => {
+                println!("Received websocket pong message: {:02X?}", msg);
+            }
+            Message::Close(msg) => {
+                if let Some(msg) = &msg {
+                    println!("Received websocket close message {}", msg.reason);
+                }
+            },
+            Message::Frame(_) => {
+               unreachable!();
+            }
+        }
     }
 
-    tokio::task::spawn(async move {
-        while let Some(result) = ws_rx.next().await {
-            let msg = match result {
-                Ok(msg) => msg,
-                Err(_) => break
-            };
-            if msg.is_close() { break; }
-            println!("Received websocket message: {:?}", msg);
-        }
-    });
+    Ok(())
 }
+
+// async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, data: Arc<Data>) {
+//     let (ws_tx, mut ws_rx) = ws.split();
+//     let (tx, rx) = sync::mpsc::unbounded_channel();
+//     let rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+//     tokio::spawn(rx.forward(ws_tx));
+
+//     tokio::task::spawn(async move {
+//         while let Some(result) = ws_rx.next().await {
+//             let msg = match result {
+//                 Ok(msg) => msg,
+//                 Err(_) => break
+//             };
+//             if msg.is_close() { break; }
+//             println!("Received websocket message: {:?}", msg);
+//         }
+//     });
+// }
