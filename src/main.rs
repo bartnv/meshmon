@@ -30,6 +30,12 @@ pub struct Config {
     #[serde(skip)]
     runtime: RwLock<Runtime>,
 }
+impl Config {
+    async fn save(&self) {
+        let data = toml::to_string_pretty(self).unwrap();
+        fs::write("config.toml", data).await.unwrap();
+    }
+}
 
 #[derive(Default, Serialize, Deserialize)]
 struct Node {
@@ -184,8 +190,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 runtime: RwLock::new(Default::default()),
             }
         ));
-        let data = toml::to_string_pretty(&*config).unwrap();
-        fs::write("config.toml", data).await.unwrap();
+        config.read().unwrap().save().await;
         println!("Wrote template configuration file to 'config.toml'");
         return Ok(());
     }
