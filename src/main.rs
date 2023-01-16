@@ -1,5 +1,5 @@
 // #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::RwLock, error::Error, sync::Arc, convert::TryInto };
+use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::{ RwLock, atomic::AtomicBool }, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
 use serde::{ Deserialize, Serialize };
 use tokio::{ fs, net, sync::mpsc };
 use hyper_tungstenite::tungstenite;
@@ -12,6 +12,7 @@ use generic_array::GenericArray;
 use chrono::{ TimeZone, offset::Local };
 use git_version::git_version;
 use termion::event::Key;
+use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
 
 mod control;
 mod tcp;
@@ -24,9 +25,11 @@ pub struct Config {
     privkey: String,
     targetpeers: u8,
     dotfile: Option<String>,
+    letsencrypt: Option<String>,
     nodes: Vec<Node>,
+    cache: HashMap<String, String>,
     #[serde(skip)]
-    modified: bool,
+    modified: AtomicBool,
     #[serde(skip)]
     runtime: RwLock<Runtime>,
 }
@@ -60,6 +63,8 @@ struct Runtime {
     connseq: u32,
     acceptnewnodes: bool,
     tui: bool,
+    http: Option<String>,
+    https: Option<String>,
     debug: bool,
     results: bool
 }
@@ -134,7 +139,7 @@ pub enum Protocol {
 }
 impl Protocol {
     fn new_intro(config: &Arc<RwLock<Config>>) -> Protocol {
-        let pubkey = base64::encode(config.read().unwrap().runtime.read().unwrap().pubkey.as_ref().unwrap().as_bytes());
+        let pubkey = base64.encode(config.read().unwrap().runtime.read().unwrap().pubkey.as_ref().unwrap().as_bytes());
         Protocol::Intro { version: 1, name: config.read().unwrap().name.clone(), pubkey }
     }
     fn new_crypt(config: &Arc<RwLock<Config>>) -> Protocol {
@@ -163,12 +168,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .subcommand(Command::new("init")
             .about("Create a new configuration file and exit")
             .arg(Arg::new("name").short('n').long("name").help("The name for this node").default_value("MyName"))
+            .arg(Arg::new("letsencrypt").long("letsencrypt").num_args(1).value_name("email").help("Specify the account email address used with Let's Encrypt for --https"))
         )
         .subcommand(Command::new("run")
             .about("Run the monitor")
             .arg(Arg::new("acceptnewnodes").short('a').long("accept").action(ArgAction::SetTrue).help("Auto-accept new nodes"))
             .arg(Arg::new("connect").short('c').long("connect").action(ArgAction::Append).help("Connect to this <address:port>"))
-            .arg(Arg::new("web").short('w').long("web").help("Start HTTP server on this <address:port>"))
+            .arg(Arg::new("http").long("http").value_name("address:port").help("Start HTTP server on this <address:port>"))
+            .arg(Arg::new("https").long("https").value_name("address:port").help("Start HTTPS server on this <address:port>")
+                .long_help("Start HTTPS server on this <address:port>\nLet's Encrypt will be used to request a certificate.\nFor this to work the port will need to be 443 or port-forwarded from 443.")
+            )
+            .arg(Arg::new("letsencrypt").long("letsencrypt").num_args(1).value_name("email").help("Specify the account email address used with Let's Encrypt for --https (only needed once)"))
             .arg(Arg::new("tui").short('t').long("tui").action(ArgAction::SetTrue).help("Activate the interactive terminal user-interface"))
             .arg(Arg::new("results").long("results").action(ArgAction::SetTrue).help("Log individual ping results"))
             .arg(Arg::new("debug").long("debug").action(ArgAction::SetTrue).help("Verbose logging"))
@@ -177,16 +187,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config: Arc<RwLock<Config>>;
     if let Some(args) = args.subcommand_matches("init") {
         let mut rng = rand::rngs::OsRng;
-        let privkey = base64::encode(SecretKey::generate(&mut rng).as_bytes());
+        let privkey = base64.encode(SecretKey::generate(&mut rng).as_bytes());
         config = Arc::new(RwLock::new(
             Config {
-                name: args.get_one::<&str>("name").unwrap().to_string(),
+                name: args.get_one::<String>("name").unwrap().clone(),
                 listen: vec!["[::]:7531".to_owned()],
                 privkey,
                 nodes: Vec::new(),
+                cache: HashMap::new(),
                 targetpeers: 3,
                 dotfile: None,
-                modified: false,
+                letsencrypt: args.get_one::<String>("letsencrypt").map(|e| e.clone()),
+                modified: AtomicBool::new(false),
                 runtime: RwLock::new(Default::default()),
             }
         ));
@@ -199,23 +211,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting meshmon {}", VERSION);
     {
-        let rawkey: [u8; 32] = base64::decode(&config.read().unwrap().privkey)?
-        .as_slice()
-        .try_into()
-        .expect("Entry 'privkey' in config.toml is not a valid base64 private key");
-        let config = config.write().unwrap();
+        let rawkey: [u8; 32] = base64.decode(&config.read().unwrap().privkey)?
+            .as_slice().try_into().expect("Entry 'privkey' in config.toml is not a valid base64 private key");
+        let mut config = config.write().unwrap();
+        if let Some(email) = args.get_one::<String>("letsencrypt") {
+            config.letsencrypt = Some(email.clone());
+            config.save().await;
+        }
         let mut runtime = config.runtime.write().unwrap();
         runtime.listen = get_local_interfaces(&config.listen);
         runtime.privkey = Some(rawkey.into());
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key());
         runtime.acceptnewnodes = args.get_flag("acceptnewnodes");
         runtime.tui = args.get_flag("tui");
+        runtime.http = args.get_one::<String>("http").map(|e| e.clone());
+        runtime.https = args.get_one::<String>("https").map(|e| e.clone());
         runtime.results = args.get_flag("results");
         runtime.debug = args.get_flag("debug");
         runtime.sysinfo = Some(sysinfo::System::new_with_specifics(sysinfo::RefreshKind::new()));
         runtime.graph.add_node(config.name.clone());
+        if runtime.https.is_some() && config.letsencrypt.is_none() {
+            eprintln!("Account email for Let's Encrypt not set; use --letsencrypt once to enable --https");
+            return Ok(());
+        }
         println!("Local listen ports: {}", runtime.listen.join(", "));
-        println!("My pubkey is {}", base64::encode(runtime.pubkey.as_ref().unwrap().as_bytes()));
+        println!("My pubkey is {}", base64.encode(runtime.pubkey.as_ref().unwrap().as_bytes()));
     }
 
     let (ctrltx, ctrlrx) = mpsc::channel(10); // Channel used to send updates to the control task
@@ -256,7 +276,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Connect to the nodes passed in --connect arguments
-    if let Some(params) = args.get_many::<&str>("connect") {
+    if let Some(params) = args.get_many::<String>("connect").map(|e| e.clone()) {
         for port in params {
             let ports = vec![port.to_string()];
             let config = config.clone();
@@ -279,9 +299,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Control task; handles coordinating jobs
     let aconfig = config.clone();
-    let web = args.get_one::<String>("web").map(|s| s.to_string());
     let control = tokio::spawn(async move {
-        control::run(aconfig, ctrlrx, ctrltx, udptx, web).await;
+        control::run(aconfig, ctrlrx, ctrltx, udptx).await;
     });
     let (res,) = tokio::join!(control);
     res.unwrap();

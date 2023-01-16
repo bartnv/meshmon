@@ -1,4 +1,4 @@
-use std::{ sync::RwLock, sync::Arc, mem::drop, collections::{ HashMap, VecDeque }, cmp::Ordering };
+use std::{ sync::RwLock, sync::Arc, sync::atomic::Ordering, mem::drop, collections::{ HashMap, VecDeque }, cmp };
 use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
 use tokio::{ fs, sync, net::TcpListener };
 use tokio_stream::{ wrappers::TcpListenerStream };
@@ -10,8 +10,12 @@ use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
 use hyper::{Body, Request, Response };
 use hyper::service::service_fn;
-use rustls_acme::{ AcmeConfig, caches::DirCache };
+use rustls_acme::AcmeConfig;
 use serde::Serialize;
+use ring::digest::{ Context, SHA256 };
+use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
+use async_trait::async_trait;
+use rustls_acme::{ AccountCache, CertCache };
 use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, timestamp_from };
 
 static HISTSIZE: usize = 1440;
@@ -111,11 +115,11 @@ impl PingResult {
     }
 }
 impl Ord for PingResult {
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         match self.node.cmp(&other.node) {
-            Ordering::Equal => {
+            cmp::Ordering::Equal => {
                 match self.port.cmp(&other.port) { // TODO: better comparison for ip addresses
-                    Ordering::Equal => self.intf.cmp(&other.intf),
+                    cmp::Ordering::Equal => self.intf.cmp(&other.intf),
                     ord => ord
                 }
             },
@@ -125,7 +129,7 @@ impl Ord for PingResult {
 }
 impl Eq for PingResult {}
 impl PartialOrd for PingResult {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
@@ -180,6 +184,86 @@ impl PartialEq for Path {
     }
 }
 
+struct ConfigCache {
+    config: Arc<RwLock<Config>>
+}
+impl ConfigCache {
+    fn new(config: &Arc<RwLock<Config>>) -> ConfigCache {
+        ConfigCache {
+            config: config.clone()
+        }
+    }
+    fn cached_account_key(&self, contact: &[String], directory_url: impl AsRef<str>) -> String {
+        let mut ctx = Context::new(&SHA256);
+        for el in contact {
+            ctx.update(el.as_ref());
+            ctx.update(&[0])
+        }
+        ctx.update(directory_url.as_ref().as_bytes());
+        let hash = base64.encode(ctx.finish());
+        format!("cached_account_{}", hash)
+    }
+    fn cached_cert_key(&self, domains: &[String], directory_url: impl AsRef<str>) -> String {
+        let mut ctx = Context::new(&SHA256);
+        for domain in domains {
+            ctx.update(domain.as_ref());
+            ctx.update(&[0])
+        }
+        ctx.update(directory_url.as_ref().as_bytes());
+        let hash = base64.encode(ctx.finish());
+        format!("cached_cert_{}", hash)
+    }
+}
+#[async_trait]
+impl CertCache for ConfigCache {
+    type EC = std::io::Error;
+    async fn load_cert(
+        &self,
+        domains: &[String],
+        directory_url: &str,
+    ) -> Result<Option<Vec<u8>>, Self::EC> {
+        let key = self.cached_cert_key(&domains, directory_url);
+        Ok(self.config.read().unwrap().cache.get(&key).map(|v| base64.decode(v).unwrap()))
+    }
+    async fn store_cert(
+        &self,
+        domains: &[String],
+        directory_url: &str,
+        cert: &[u8],
+    ) -> Result<(), Self::EC> {
+        let key = self.cached_cert_key(&domains, directory_url);
+        let mut config = self.config.write().unwrap();
+        config.cache.insert(key, base64.encode(cert));
+        config.modified.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+}
+#[async_trait]
+impl AccountCache for ConfigCache {
+    type EA = std::io::Error;
+    async fn load_account(
+        &self,
+        contact: &[String],
+        directory_url: &str,
+    ) -> Result<Option<Vec<u8>>, Self::EA> {
+        let key = self.cached_account_key(&contact, directory_url);
+        Ok(self.config.read().unwrap().cache.get(&key).map(|v| base64.decode(v).unwrap()))
+    }
+
+    async fn store_account(
+        &self,
+        contact: &[String],
+        directory_url: &str,
+        account: &[u8],
+    ) -> Result<(), Self::EA> {
+        let key = self.cached_account_key(&contact, directory_url);
+        let mut config = self.config.write().unwrap();
+        config.cache.insert(key, base64.encode(account));
+        config.modified.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 fn start_tui(data: Arc<Data>) -> Option<Terminal<TermionBackend<AlternateScreen<RawTerminal<std::io::Stdout>>>>> {
     let stdout = std::io::stdout().into_raw_mode().unwrap();
     let stdout = stdout.into_alternate_screen().unwrap();
@@ -190,13 +274,13 @@ fn start_tui(data: Arc<Data>) -> Option<Terminal<TermionBackend<AlternateScreen<
     Some(term)
 }
 
-pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>, web: Option<String>) {
+pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>) {
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
-    let (myname, results, debug) = {
+    let (myname, results, debug, http, https, letsencrypt) = {
         let config = aconfig.read().unwrap();
         let runtime = config.runtime.read().unwrap();
-        (config.name.clone(), runtime.results, runtime.debug)
+        (config.name.clone(), runtime.results, runtime.debug, runtime.http.clone(), runtime.https.clone(), config.letsencrypt.clone())
     };
     let mut nodeidx = usize::MAX-1;
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
@@ -205,28 +289,70 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let mut logmsgs: Vec<(LogLevel, String)> = vec![];
     let data: Arc<Data> = Arc::new(Default::default());
 
-    if let Some(arg) = web {
-        if let Ok(sa) = arg.parse::<std::net::SocketAddr>() {
-            let config = aconfig.clone();
-            let data = data.clone();
-            tokio::spawn(async move {
-                let http = hyper::server::conn::Http::new();
-                let service = service_fn(move |req| {
-                    handle_http(req, config.clone(), data.clone())
-                });
-                let tcp_listener = TcpListener::bind(sa).await.unwrap();
-                println!("Started HTTP server on {}", arg);
-                while let Ok((stream, _)) = tcp_listener.accept().await {
-                    let conn = http.serve_connection(stream, service.clone()).with_upgrades();
-                    tokio::spawn(async move {
-                        if let Err(e) = conn.await {
-                            eprintln!("Error: {e}");
-                        }
-                    });
-                }
+    if let Some(arg) = http {
+        let config = aconfig.clone();
+        let data = data.clone();
+        tokio::spawn(async move {
+            let http = hyper::server::conn::Http::new();
+            let service = service_fn(move |req| {
+                handle_http(req, config.clone(), data.clone())
             });
-        }
-        else { eprintln!("--web option did not contain a valid ip:port value"); }
+            let tcp_listener = match TcpListener::bind(&arg).await {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("Failed to start http server on {arg}: {e}");
+                    return;
+                }
+            };
+            println!("Started HTTP server on {}", arg);
+            while let Ok((stream, _)) = tcp_listener.accept().await {
+                let conn = http.serve_connection(stream, service.clone()).with_upgrades();
+                tokio::spawn(async move {
+                    if let Err(e) = conn.await {
+                        eprintln!("Error: {e}");
+                    }
+                });
+            }
+        });
+    }
+    if let Some(arg) = https {
+        let config = aconfig.clone();
+        let data = data.clone();
+        tokio::spawn(async move {
+            let http = hyper::server::conn::Http::new();
+            let aconfig = config.clone();
+            let service = service_fn(move |req| {
+                handle_http(req, aconfig.clone(), data.clone())
+            });
+            let tcp_listener = match TcpListener::bind(&arg).await {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("Failed to start http server on {arg}: {e}");
+                    return;
+                }
+            };
+            let domain = arg.rsplit_once(':').expect("No colon found in --https argument").0;
+            if domain.contains(':') || domain.find(char::is_alphabetic).is_none() {
+                eprintln!("Cannot use bare IP address with --https; use a fully qualified domain name");
+                return;
+            }
+            let tcp_incoming = TcpListenerStream::new(tcp_listener);
+            let mut tls_incoming = AcmeConfig::new([ &domain ])
+                .contact_push(format!("mailto:{}", letsencrypt.unwrap()))
+                .cache(ConfigCache::new(&config))
+                .directory_lets_encrypt(true)
+                .tokio_incoming(tcp_incoming);
+            println!("Started HTTPS server on {}", arg);
+            while let Some(tls) = tls_incoming.next().await {
+                let stream = tls.unwrap();
+                let conn = http.serve_connection(stream, service.clone()).with_upgrades();
+                tokio::spawn(async move {
+                    if let Err(e) = conn.await {
+                        eprintln!("Error: {e}");
+                    }
+                });
+            }
+});
     }
 
     let mut term = match aconfig.read().unwrap().runtime.read().unwrap().tui {
@@ -305,14 +431,13 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     });
                 }
 
-                if config.modified {
+                if config.modified.load(Ordering::Relaxed) {
+                    if debug { logmsgs.push((LogLevel::Debug, "Saving configuration file".to_owned())); }
                     let data = toml::to_string_pretty(&*config).unwrap();
                     tokio::spawn(async move {
                         fs::write("config.toml", data).await
                     });
-                    drop(config);
-                    let mut config = aconfig.write().unwrap();
-                    config.modified = false;
+                    config.modified.store(false, Ordering::Relaxed);
                 }
             },
             Control::Round(_round) => {
@@ -522,7 +647,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if let Some(mut entry) = config.nodes.iter_mut().find(|i| i.name == node) {
                     if ports != entry.listen {
                         entry.listen = ports.clone();
-                        config.modified = true;
+                        config.modified.store(true, Ordering::Relaxed);
                         relaymsgs.push((from, Protocol::Ports { node, ports }, false));
                     }
                 }

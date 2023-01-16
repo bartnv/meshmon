@@ -6,6 +6,7 @@ use tokio::{ net, sync };
 use ipnetwork::{ IpNetwork, Ipv6Network };
 use pnet_datalink::interfaces;
 use lazy_static::lazy_static;
+use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
 use crate::{ Config, Runtime, Node, Control, Protocol, LogLevel, encrypt_frame, decrypt_frame, variant_eq };
 
 static PINGFREQ: u8 = 30;
@@ -31,7 +32,7 @@ struct PingNode {
 impl PingNode {
     fn from(runtime: &RwLock<Runtime>, node: &Node, cohort: &mut std::iter::Cycle<std::ops::Range<u8>>) -> PingNode {
         let mut keybytes: [u8; 32] = [0; 32];
-        keybytes.copy_from_slice(&base64::decode(&node.pubkey).unwrap());
+        keybytes.copy_from_slice(&base64.decode(&node.pubkey).unwrap());
         PingNode {
             rescan: true,
             notify: true,

@@ -1,7 +1,8 @@
 use crypto_box::{ PublicKey, SalsaBox};
 use rmp_serde::decode::Error as DecodeError;
-use std::{ time, time::{ Duration, Instant }, default::Default, sync::RwLock, sync::Arc, convert::TryInto };
+use std::{ time, time::{ Duration, Instant }, default::Default, sync::{ RwLock, Arc, atomic::Ordering }, convert::TryInto };
 use tokio::{ net, sync, time::timeout, io::AsyncReadExt, io::AsyncWriteExt};
+use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
 use crate::{ Config, Node, Connection, ConnState, Control, Protocol, LogLevel, encrypt_frame, decrypt_frame };
 
 pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool, learn: bool) {
@@ -148,7 +149,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                             return;
                                         }
                                         config.nodes.push(Node { name: conn.nodename.clone(), pubkey: pubkey.clone(), .. Default::default() });
-                                        config.modified = true;
+                                        config.modified.store(true, Ordering::Relaxed);
                                         config.nodes.last_mut().unwrap()
                                     }
                                 };
@@ -164,7 +165,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 }
                                 node.connected = true;
                                 let mut keybytes: [u8; 32] = [0; 32];
-                                keybytes.copy_from_slice(&base64::decode(pubkey).unwrap());
+                                keybytes.copy_from_slice(&base64.decode(pubkey).unwrap());
                                 conn.pubkey = Some(PublicKey::from(keybytes));
 
                                 sbox = Some(SalsaBox::new(conn.pubkey.as_ref().unwrap(), config.runtime.read().unwrap().privkey.as_ref().unwrap()));
@@ -260,7 +261,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                         let text = format!("Learned public key for node {}", name);
                                         control.push(Control::Log(LogLevel::Info, text));
                                         config.nodes.push(Node { name, pubkey, .. Default::default() });
-                                        config.modified = true;
+                                        config.modified.store(true, Ordering::Relaxed);
                                     }
                                 }
                             }
