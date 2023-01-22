@@ -679,7 +679,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             results.last_mut().unwrap()
                         }
                     };
-                    result.last = Some(rtt);
+                    if result.last.is_none() || rtt != 0 { result.last = Some(rtt); } // Don't overwrite a succesful ping result with a loss
                     if rtt > 0 && rtt < result.min { result.min = rtt; }
                     result.min
                 };

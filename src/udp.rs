@@ -296,8 +296,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e))).await.unwrap();
                                 }
                                 if !port.usable || port.state > PortState::Loss(0) {
-                                    if !send_ping(&socks, &node.sbox, port, &port.route, true).await && debug {
-                                        ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP probe to {}:{} via {}", port.ip, port.port, port.route))).await.unwrap();
+                                    if !send_ping(&socks, &node.sbox, port, &port.route, false).await && debug {
+                                        ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {}:{} via {}", port.ip, port.port, port.route))).await.unwrap();
                                     }
                                 }
                             },
