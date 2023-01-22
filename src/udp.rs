@@ -183,7 +183,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     match target.state {
                                         PortState::New => { target.state = PortState::Init(0); },
                                         PortState::Init(_) if target.sent > 15 => {
-                                            if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} intf {} failed to initialize with 15 pings; giving up", name, target.ip))).await.unwrap(); }
+                                            if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} {}:{} failed to initialize with 15 pings; giving up", name, target.ip, target.port))).await.unwrap(); }
                                             target.sent = 0;
                                             target.usable = false;
                                         },
@@ -275,20 +275,20 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let mut port = match res {
                             Some(port) => port,
                             None => {
-                                if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Learned new port {} for node {} with route {}", remote, name, route))).await.unwrap(); }
+                                if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Learned new path {} for node {} with route {}", remote, name, route))).await.unwrap(); }
                                 node.ports.push(PingPort::from(&remote.to_string(), Some(route), true));
                                 node.ports.last_mut().unwrap()
                             }
                         };
 
                         if remote.port() != port.port {
-                            if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} ip {} moved from port {} to {}", name, remoteip, port.port, remote.port()))).await.unwrap(); }
+                            if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} ip {} route {} moved from port {} to {}", name, remoteip, port.route, port.port, remote.port()))).await.unwrap(); }
                             port.port = remote.port();
                         }
 
                         match result.unwrap() {
                             Protocol::Ping { value } => {
-                                let frame = match value {
+                                let frame = match value { // Ping value 0 indicates a probe; return the remote's external ip back to it for NAT detection
                                     0 => build_frame(&node.sbox, Protocol::Pong { value: 0, source: remote.ip().to_string() }),
                                     _ => build_frame(&node.sbox, Protocol::Pong { value, source: String::new() })
                                 };
@@ -304,7 +304,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             Protocol::Pong { value, source } => {
                                 if !port.usable {
                                     port.usable = true;
-                                    if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Marked {} as pingable via {}", port.ip, port.route))).await.unwrap(); }
+                                    if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} {}:{} marked pingable via {}", name, port.ip, port.port, port.route))).await.unwrap(); }
                                 }
                                 if port.waiting { port.waiting = false; }
                                 if !source.is_empty() && source != port.route && (port.external.is_none() || *port.external.as_ref().unwrap() != source) {
@@ -319,7 +319,10 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                                 match port.state {
                                     PortState::New => { port.state = PortState::Init(1); },
-                                    PortState::Init(n) if n == 5 => { port.state = PortState::Ok; },
+                                    PortState::Init(n) if n == 5 => {
+                                        port.state = PortState::Ok;
+                                        if debug { ctrltx.send(Control::Log(LogLevel::Status, format!("Started monitoring node {} {}:{} via {}", name, port.ip, port.port, port.route))).await.unwrap(); }
+                                    },
                                     PortState::Init(ref mut n) => { *n += 1; },
                                     PortState::Ok => { },
                                     PortState::Loss(n) => {
