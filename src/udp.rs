@@ -56,7 +56,6 @@ struct PingPort {
     port: u16,
     route: String,
     external: Option<String>,
-    usable: bool,
     waiting: bool,
     sent: u32,
     minrtt: u16,
@@ -64,7 +63,7 @@ struct PingPort {
     hist: VecDeque<u16>,
 }
 impl PingPort {
-    fn from(port: &str, route: Option<String>, usable: bool) -> PingPort {
+    fn from(port: &str, route: Option<String>, enable: bool) -> PingPort {
         let sa: SocketAddr = port.parse().unwrap();
         let label = match sa {
             SocketAddr::V4(sa) => sa.ip().to_string(),
@@ -76,11 +75,10 @@ impl PingPort {
             port: sa.port(),
             route: route.unwrap_or_default(),
             external: None,
-            usable,
             waiting: false,
             sent: 0,
             minrtt: u16::MAX,
-            state: PortState::New,
+            state: if enable { PortState::Init(0) } else { PortState::Idle },
             hist: VecDeque::with_capacity(HISTSIZE),
         }
     }
@@ -91,7 +89,7 @@ impl PingPort {
 }
 #[derive(Debug, PartialEq, PartialOrd)]
 enum PortState {
-    New,
+    Idle,
     Init(u8), // Consecutive successes
     Ok,
     Loss(u8), // Consecutive failures
@@ -181,11 +179,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     if target.state > PortState::Init(0) { ctrltx.send(Control::Result(name.clone(), match &target.external { Some(ip) => ip.clone(), None => target.route.clone() }, target.ip.clone(), 0)).await.unwrap(); }
                                     target.push_hist(0);
                                     match target.state {
-                                        PortState::New => { target.state = PortState::Init(0); },
+                                        PortState::Idle => { target.state = PortState::Init(0); },
                                         PortState::Init(_) if target.sent > 15 => {
                                             if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} {}:{} failed to initialize with 15 pings; giving up", name, target.ip, target.port))).await.unwrap(); }
                                             target.sent = 0;
-                                            target.usable = false;
+                                            target.state = PortState::Idle;
                                         },
                                         PortState::Init(ref mut n) => { *n = 0; },
                                         PortState::Ok => {
@@ -218,7 +216,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         if round != node.cohort { continue; }
                         let mut count = 0;
                         for target in node.ports.iter_mut() {
-                            if !target.usable { count += 1; continue; }
+                            if target.state == PortState::Idle { count += 1; continue; }
                             if let PortState::Backoff(ref mut n) = target.state {
                                 if *n & (*n-1) != 0 { // Only ping every power-of-two rounds
                                     if *n == 255 { *n = 128; }
@@ -295,17 +293,13 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
                                     ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e))).await.unwrap();
                                 }
-                                if !port.usable || port.state > PortState::Loss(0) {
-                                    if !send_ping(&socks, &node.sbox, port, &port.route, false).await && debug {
+                                if port.state == PortState::Idle || port.state > PortState::Loss(0) {
+                                    if !send_ping(&socks, &node.sbox, port, &port.route, true).await && debug {
                                         ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {}:{} via {}", port.ip, port.port, port.route))).await.unwrap();
                                     }
                                 }
                             },
                             Protocol::Pong { value, source } => {
-                                if !port.usable {
-                                    port.usable = true;
-                                    if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} {}:{} marked pingable via {}", name, port.ip, port.port, port.route))).await.unwrap(); }
-                                }
                                 if port.waiting { port.waiting = false; }
                                 if !source.is_empty() && source != port.route && (port.external.is_none() || *port.external.as_ref().unwrap() != source) {
                                     if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Learned external (NAT) address for route {}: {}", &port.route, &source))).await.unwrap(); }
@@ -318,7 +312,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     ctrltx.send(Control::Result(name.clone(), match &port.external { Some(ip) => ip.clone(), None => local.ip().to_string() }, port.ip.clone(), rtt)).await.unwrap();
                                 }
                                 match port.state {
-                                    PortState::New => { port.state = PortState::Init(1); },
+                                    PortState::Idle => { port.state = PortState::Init(1); },
                                     PortState::Init(n) if n == 5 => {
                                         port.state = PortState::Ok;
                                         if debug { ctrltx.send(Control::Log(LogLevel::Status, format!("Started monitoring node {} {}:{} via {}", name, port.ip, port.port, port.route))).await.unwrap(); }
