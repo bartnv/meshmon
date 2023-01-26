@@ -134,11 +134,12 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
     }
 
     let mut tick: u64 = 0;
+    let mut round: u8 = 0;
     let mut interval = tokio::time::interval(Duration::from_secs((PINGFREQ/SPREAD).into()));
     loop {
         tokio::select!{
             _ = interval.tick() => {
-                let round = (tick%SPREAD as u64) as u8;
+                round = (tick%SPREAD as u64) as u8;
                 if round == 0 { ctrltx.send(Control::Round(tick/SPREAD as u64)).await.unwrap(); }
                 for (name, node) in nodes.iter_mut() {
                     if node.rescan {
@@ -185,7 +186,11 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                             target.sent = 0;
                                             target.state = PortState::Idle;
                                         },
-                                        PortState::Init(ref mut n) => { *n = 0; },
+                                        PortState::Init(ref mut n) => {
+                                            *n = 0;
+                                            // if node.cohort == 0 { node.cohort = SPREAD-1; } // Modulate the cohort to see if we can sync up to the other side
+                                            // else { node.cohort -= 1; }
+                                        },
                                         PortState::Ok => {
                                             target.state = PortState::Loss(1);
                                             // Immediately send another ping in case the path just needs to be hole-punched again
@@ -293,9 +298,17 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
                                     ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e))).await.unwrap();
                                 }
-                                if port.state == PortState::Idle || port.state > PortState::Loss(0) {
+                                if port.state == PortState::Idle {
                                     if !send_ping(&socks, &node.sbox, port, &port.route, true).await && debug {
                                         ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {}:{} via {}", port.ip, port.port, port.route))).await.unwrap();
+                                    }
+                                }
+                                if port.state != PortState::Ok { // Adjust cohort to retry in the next round
+                                    if debug { println!("Got ping from node {} in {:?}", name, port.state); }
+                                    let next = if round == SPREAD-1 { 0 } else { round+1 };
+                                    if node.cohort != next {
+                                        if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} moved from cohort {} to {}", name, node.cohort, next))).await.unwrap(); }
+                                        node.cohort = next;
                                     }
                                 }
                             },
