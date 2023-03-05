@@ -140,7 +140,6 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
         tokio::select!{
             _ = interval.tick() => {
                 round = (tick%SPREAD as u64) as u8;
-                if round == 0 { ctrltx.send(Control::Round(tick/SPREAD as u64)).await.unwrap(); }
                 for (name, node) in nodes.iter_mut() {
                     if node.rescan {
                         node.rescan = false;
@@ -240,7 +239,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         if count > 15 { eprintln!("Node {} has {} unusable ports", name, count); }
                     }
                 }
-                // if tick%(15*SPREAD as u64) == 0 { check_loss(&ctrltx, &mut nodes).await; }
+                if round == 0 { ctrltx.send(Control::Round(tick/SPREAD as u64)).await.unwrap(); }
                 tick += 1;
             }
             res = readrx.recv() => { // UdpControl messages from udpreader tasks
