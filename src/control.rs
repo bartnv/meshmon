@@ -292,51 +292,51 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     if let Some(arg) = http {
         let config = aconfig.clone();
         let data = data.clone();
+        let ctrltx = ctrltx.clone();
         tokio::spawn(async move {
             let http = hyper::server::conn::Http::new();
             let service = service_fn(move |req| {
-                if debug { println!("{} Received HTTP request {} {}", timestamp(), req.method(), req.uri()); }
+                // if debug { println!("{} Received HTTP request {} {}", timestamp(), req.method(), req.uri()); }
                 handle_http(req, config.clone(), data.clone())
             });
             let tcp_listener = match TcpListener::bind(&arg).await {
                 Ok(x) => x,
                 Err(e) => {
-                    eprintln!("Failed to start http server on {arg}: {e}");
+                    ctrltx.send(Control::Log(LogLevel::Error, format!("Failed to start http server on {arg}: {e}"))).await.unwrap();
                     return;
                 }
             };
-            println!("{} Started HTTP server on {}", timestamp(), arg);
+            ctrltx.send(Control::Log(LogLevel::Info, format!("Started HTTP server on {}", arg))).await.unwrap();
             while let Ok((stream, addr)) = tcp_listener.accept().await {
-                if debug { println!("{} Incoming HTTP connection from {}", timestamp(), addr); }
+                if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Incoming HTTP connection from {}", addr))).await.unwrap(); }
                 let conn = http.serve_connection(stream, service.clone()).with_upgrades();
-                tokio::spawn(async move {
-                    if let Err(e) = conn.await {
-                        eprintln!("Error: {e}");
-                    }
-                });
+                if let Err(e) = tokio::spawn(async move { conn.await }).await {
+                    ctrltx.send(Control::Log(LogLevel::Error, format!("Error: {e}"))).await.unwrap();
+                }
             }
         });
     }
     if let Some(arg) = https {
         let config = aconfig.clone();
         let data = data.clone();
+        let ctrltx = ctrltx.clone();
         tokio::spawn(async move {
             let http = hyper::server::conn::Http::new();
             let aconfig = config.clone();
             let service = service_fn(move |req| {
-                if debug { println!("{} Received HTTPS request {} {}", timestamp(), req.method(), req.uri()); }
+                // if debug { println!("{} Received HTTPS request {} {}", timestamp(), req.method(), req.uri()); }
                 handle_http(req, aconfig.clone(), data.clone())
             });
             let tcp_listener = match TcpListener::bind(&arg).await {
                 Ok(x) => x,
                 Err(e) => {
-                    eprintln!("Failed to start https server on {arg}: {e}");
+                    ctrltx.send(Control::Log(LogLevel::Error, format!("Failed to start https server on {arg}: {e}"))).await.unwrap();
                     return;
                 }
             };
             let domain = arg.rsplit_once(':').expect("No colon found in --https argument").0;
             if domain.contains(':') || domain.find(char::is_alphabetic).is_none() {
-                eprintln!("Cannot use bare IP address with --https; use a fully qualified domain name");
+                ctrltx.send(Control::Log(LogLevel::Error, format!("Cannot use bare IP address with --https; use a fully qualified domain name"))).await.unwrap();
                 return;
             }
             let tcp_incoming = TcpListenerStream::new(tcp_listener);
@@ -345,18 +345,16 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 .cache(ConfigCache::new(&config))
                 .directory_lets_encrypt(true)
                 .tokio_incoming(tcp_incoming);
-            println!("{} Started HTTPS server on {}", timestamp(), arg);
+            ctrltx.send(Control::Log(LogLevel::Info, format!("Started HTTPS server on {}", arg))).await.unwrap();
             while let Some(tls) = tls_incoming.next().await {
                 let stream = tls.unwrap();
-                if debug { println!("{} Incoming HTTPS connection from {}", timestamp(), stream.get_ref().get_ref().0.get_ref().peer_addr().unwrap_or("0.0.0.0:0".parse().unwrap())) }
+                if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Incoming HTTPS connection from {}", stream.get_ref().get_ref().0.get_ref().peer_addr().unwrap_or("0.0.0.0:0".parse().unwrap())))).await.unwrap(); }
                 let conn = http.serve_connection(stream, service.clone()).with_upgrades();
-                tokio::spawn(async move {
-                    if let Err(e) = conn.await {
-                        eprintln!("Error: {e}");
-                    }
-                });
+                if let Err(e) = tokio::spawn(async move { conn.await }).await {
+                    ctrltx.send(Control::Log(LogLevel::Error, format!("Error: {e}"))).await.unwrap();
+                }
             }
-});
+        });
     }
 
     let mut term = match aconfig.read().unwrap().runtime.read().unwrap().tui {
@@ -375,7 +373,6 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 },
                 Err(e) => eprintln!("Error: {}", e)
             }
-            
         }
     });
 
