@@ -302,12 +302,17 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                         ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {}:{} via {}", port.ip, port.port, port.route))).await.unwrap();
                                     }
                                 }
-                                if port.state != PortState::Ok { // Adjust cohort to retry in the next round
-                                    if debug { println!("Got ping from node {} in {:?}", name, port.state); }
+                                if port.state != PortState::Ok {
+                                    if debug && port.state > PortState::Loss(1) {
+                                        ctrltx.send(Control::Log(LogLevel::Debug, format!("Received ping from node {} ip {} in {:?}", name, remoteip, port.state))).await.unwrap();
+                                    }
                                     let next = if round == SPREAD-1 { 0 } else { round+1 };
-                                    if node.cohort != next {
+                                    if node.cohort != next { // Adjust cohort to retry in the next round
                                         if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Node {} moved from cohort {} to {}", name, node.cohort, next))).await.unwrap(); }
                                         node.cohort = next;
+                                    }
+                                    if port.state > PortState::Backoff(0) {
+                                        port.state = PortState::Backoff(0);
                                     }
                                 }
                             },
