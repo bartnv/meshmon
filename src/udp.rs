@@ -203,9 +203,6 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                                     else { break; }
                                                 }
                                             }
-                                            if *n == 3 {
-                                                ctrltx.send(Control::Log(LogLevel::Status, format!("{} {} is down", name, target.label))).await.unwrap();
-                                            }
                                             if *n == 15 {
                                                 target.state = PortState::Backoff(1);
                                             }
@@ -336,20 +333,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                     },
                                     PortState::Init(ref mut n) => { *n += 1; },
                                     PortState::Ok => { },
-                                    PortState::Loss(n) => {
-                                        if n >= 3 {
-                                            ctrltx.send(Control::Log(LogLevel::Status, format!("{} {} is up after {} losses", name, port.label, n))).await.unwrap();
-                                        }
-                                        // else if port.losspct == 0.0 {
-                                        //     check_loss_port(port);
-                                        //     ctrltx.send(Control::Update(format!("{} {} is suffering {:.0}% packet loss", name, port.label, port.losspct))).await.unwrap();
-                                        // }
-                                        port.state = PortState::Ok;
-                                    },
-                                    PortState::Backoff(_) => {
-                                        ctrltx.send(Control::Log(LogLevel::Status, format!("{} {} is up", name, port.label))).await.unwrap();
-                                        port.state = PortState::Ok;
-                                    }
+                                    PortState::Loss(_) => { port.state = PortState::Ok; },
+                                    PortState::Backoff(_) => { port.state = PortState::Ok; }
                                 }
                             },
                             p => {

@@ -1,4 +1,4 @@
-use std::{ sync::RwLock, sync::Arc, sync::atomic::Ordering, mem::drop, collections::{ HashMap, VecDeque }, cmp };
+use std::{ sync::{ RwLock, Arc }, sync::atomic::Ordering, mem::drop, collections::{ HashMap, VecDeque }, cmp };
 use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
 use tokio::{ fs, sync, net::TcpListener };
 use tokio_stream::{ wrappers::TcpListenerStream };
@@ -16,7 +16,7 @@ use ring::digest::{ Context, SHA256 };
 use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
 use async_trait::async_trait;
 use rustls_acme::{ AccountCache, CertCache };
-use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, timestamp_from };
+use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, timestamp_from, get_local_interfaces, duration_from };
 
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
@@ -104,10 +104,11 @@ struct PingResult {
     losspct: f32,
     last: Option<u16>,
     hist: VecDeque<u16>,
+    statesince: u64 // Unix timestamp
 }
 impl PingResult {
     fn new(node: String, intf: String, port: String) -> PingResult {
-        PingResult { node, intf, port, min: u16::MAX, losspct: 0.0, last: None, hist: VecDeque::with_capacity(HISTSIZE) }
+        PingResult { node, intf, port, min: u16::MAX, losspct: 0.0, last: None, hist: VecDeque::with_capacity(HISTSIZE), statesince: unixtime() }
     }
     fn push_hist(&mut self, result: u16) {
         if self.hist.len() >= HISTSIZE { self.hist.pop_back().unwrap(); }
@@ -464,9 +465,15 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         let mut report = false;
                         result.push_hist(last);
                         result.last = None;
-                        if last == 0 && result.losspct == 0.0 {
+                        if last == 0 && result.losspct < 99.9 { // Immediately update for losses unless port was already down
+                            if result.losspct == 0.0 { // Immediately log a new loss result; updates will be sent from the periodic check_loss() runs
+                                logmsgs.push((LogLevel::Debug, format!("{} {} is suffering 1% packet loss", &result.node, &result.port)));
+                            }
                             check_loss_port(result);
-                            logmsgs.push((LogLevel::Debug, format!("{} {} is suffering {}% packet loss", &result.node, &result.port, result.losspct)));
+                            if result.losspct > 99.9 { // Port is now marked down
+                                logmsgs.push((LogLevel::Status, format!("{} {} is down", &result.node, &result.port)));
+                                result.statesince = unixtime();
+                            }
                             report = true;
                         }
                         else if result.hist.len() == 1 { report = true; }
@@ -676,8 +683,15 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                             results.last_mut().unwrap()
                         }
                     };
-                    if result.last.is_none() || rtt != 0 { result.last = Some(rtt); } // Don't overwrite a succesful ping result with a loss
-                    if rtt > 0 && rtt < result.min { result.min = rtt; }
+                    if result.last.is_none() || rtt > 0 { result.last = Some(rtt); } // Don't overwrite a succesful ping result with a loss
+                    if rtt > 0 {
+                        if rtt < result.min { result.min = rtt; }
+                        if result.losspct > 99.9 {
+                            logmsgs.push((LogLevel::Status, format!("{} {} is up after {}", &node, &port, duration_from(unixtime()-result.statesince))));
+                            check_loss_port(result);
+                            result.statesince = unixtime();
+                        }
+                    }
                     result.min
                 };
                 if sort { data.results.write().unwrap().sort(); }
