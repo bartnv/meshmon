@@ -887,18 +887,18 @@ fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) -
 fn check_loss_port(result: &mut PingResult) {
     let mut count = 0;
     let mut losses = 0;
-    let mut conseq = 0;
-    for x in &result.hist {
+    let mut conseq = 0; // Consecutive losses
+    for x in &result.hist { // Hist starts with most recent results
         count += 1;
-        if *x == 0 || *x == u16::MAX {
+        if *x == 0 || *x == u16::MAX { // Loss result
             losses += 1;
             conseq += 1;
         }
         else {
-            if conseq > 2 { losses -= conseq; }
+            if conseq > 2 { losses -= conseq; } // Don't include downtime (3+ conseq losses) in loss percentage
             conseq = 0;
         }
-        if count == 3 && conseq == 3 {
+        if count == 3 && conseq == 3 { // Last 3 results are losses; report downtime
             result.losspct = 100.0;
             return;
         }
