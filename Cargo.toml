@@ -34,6 +34,7 @@ termion = "2"
 chrono = "0"
 git-version = "*"
 rustls-acme = { version = "*", features = [ "tokio" ] }
+regex = "*"
 
 [profile.release]
 strip = true

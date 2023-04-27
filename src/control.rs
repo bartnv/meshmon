@@ -1,5 +1,6 @@
 use std::{ sync::{ RwLock, Arc }, sync::atomic::Ordering, mem::drop, collections::{ HashMap, VecDeque }, cmp };
 use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
+use regex::Regex;
 use tokio::{ fs, sync, net::TcpListener };
 use tokio_stream::{ wrappers::TcpListenerStream };
 use futures_util::stream::StreamExt;
@@ -696,11 +697,11 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 };
                 if sort { data.results.write().unwrap().sort(); }
                 if rtt == 0 {
-                    data.push_ping(format!("Node {:10} {:39} -> {:39} lost", node, intf, port));
+                    data.push_ping(format!("Node {:10} {:26} -> {:26} lost", node, shorten_ipv6(intf), shorten_ipv6(port)));
                 }
                 else {
                     data.push_ping(match rtt-min {
-                      n if n > THRESHOLD => format!("Node {:10} {:39} -> {:39} {:>4}ms (min {}/dif {}/cat {})", node, intf, port, rtt, min, rtt-min, ((n-THRESHOLD) as f32).sqrt() as u16),
+                      n if n > THRESHOLD => format!("Node {:10} {:26} -> {:26} {:>4}ms (min {}/dif {}/cat {})", node, shorten_ipv6(intf), shorten_ipv6(port), rtt, min, rtt-min, ((n-THRESHOLD) as f32).sqrt() as u16),
                       _ => format!("Node {:10} {:39} -> {:39} {:>4}ms", node, intf, port, rtt)
                     });
                 }
@@ -971,14 +972,14 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
         let mut rows: Vec<_> = intf.iter().collect();
         rows.sort_by(|a, b| a.1.symbol.cmp(&b.1.symbol));
         for (intf, stats) in rows {
-            content.push(Row::new(vec![ format!(" {} ", stats.symbol), (*intf).clone(), format!("{:^5}", stats.min), format!("{:^5}", stats.lag) ]));
+            content.push(Row::new(vec![ format!(" {} ", stats.symbol), shorten_ipv6(intf.clone()), format!("{:^5}", stats.min), format!("{:^5}", stats.lag) ]));
         }
     }
     let table = Table::new(content)
         .block(block)
         .column_spacing(1)
         .header(Row::new(vec![ "Sym", "Interface", "Best", "Lag" ]))
-        .widths(&[Constraint::Length(3), Constraint::Length(20), Constraint::Length(5), Constraint::Length(5)]);
+        .widths(&[Constraint::Length(3), Constraint::Length(26), Constraint::Length(5), Constraint::Length(5)]);
     f.render_widget(table, vert2[1]);
 
     let block = Block::default()
@@ -997,7 +998,7 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
             Some(i) => i.symbol,
             None => ' '
         };
-        let header = format!("{:10} {:39} {} ", result.node, result.port, symbol);
+        let header = format!("{:10} {:26} {} ", result.node, shorten_ipv6(result.port.to_string()), symbol);
         let mut line = Vec::with_capacity((vert1[1].width-50).into());
         line.push(Span::from(header));
         if let Some(rtt) = result.last {
@@ -1164,6 +1165,14 @@ async fn handle_websocket(ws: HyperWebsocket, config: Arc<RwLock<Config>>, data:
     }
 
     Ok(())
+}
+
+fn shorten_ipv6(ip: String) -> String {
+    lazy_static!{
+        static ref LONGIPV6: Regex = Regex::new(r"(?i)^([0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:)[0-9a-f]+:[0-9a-f]+:[0-9a-f]+(:[0-9a-f]+)$").unwrap();
+    }
+    if let Some(caps) = LONGIPV6.captures(&ip) { format!("{}*{}", &caps[1], &caps[2]) }
+    else { ip }
 }
 
 // async fn handle_websocket(ws: warp::ws::WebSocket, config: Arc<RwLock<Config>>, data: Arc<Data>) {

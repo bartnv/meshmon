@@ -1388,6 +1388,7 @@ dependencies = [
  "pnet",
  "pnet_datalink",
  "rand 0.8.5",
+ "regex",
  "ring",
  "rmp-serde",
  "rustls-acme",
