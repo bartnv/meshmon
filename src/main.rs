@@ -358,6 +358,26 @@ pub fn timestamp() -> String {
 pub fn timestamp_from(ts: u64) -> String {
     Local.timestamp_opt(ts as i64, 0).unwrap().format("%Y-%m-%d %H:%M:%S").to_string()
 }
+pub fn duration_from(mut secs: u64) -> String {
+    if secs == 0 { return String::from("0s"); }
+
+    let mut result = String::with_capacity(10);
+    let delta = [ 31449600, 604800, 86400, 3600, 60, 1 ];
+    let unit = [ 'y', 'w', 'd', 'h', 'm', 's' ];
+    let mut c = 0;
+
+    loop {
+        if secs >= delta[c] { break; }
+        c += 1;
+    }
+    result.push_str(&format!("{}{}", secs/delta[c], unit[c]));
+    secs %= delta[c];
+    if secs != 0 {
+        c += 1;
+        result.push_str(&format!(" {}{}", secs/delta[c], unit[c]));
+    }
+    result
+}
 
 fn variant_eq<T>(a: &T, b: &T) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
