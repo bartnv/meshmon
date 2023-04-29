@@ -115,6 +115,8 @@ pub enum Control {
     Send(Protocol), // Protocol message to send
     Scan(String, String), // From node, to node
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
+    NewIntf(String),
+    DropIntf(String),
     Result(String, String, String, u16), // Node name, interface address, port, rtt
     Log(LogLevel, String), // Status update
     Path(String, String, String, String, String, u8), // Peer name, from name, to name, from intf, to intf, losspct
@@ -307,7 +309,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn get_local_interfaces(listen: &[String]) -> Vec<String> {
+pub fn get_local_interfaces(listen: &[String]) -> Vec<String> {
     let mut res = vec![];
     for item in listen {
         if item.starts_with("0.0.0.0:") ||

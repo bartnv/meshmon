@@ -452,6 +452,30 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     });
                     config.modified.store(false, Ordering::Relaxed);
                 }
+
+                if ticks%60 == 10 { // Check for changes in local interfaces after 10 mins and every hour thereafter
+                    let refresh = get_local_interfaces(&config.listen);
+                    let mut runtime = config.runtime.write().unwrap();
+                    let mut found = false;
+                    for intf in &refresh {
+                        if !runtime.listen.contains(intf) {
+                            logmsgs.push((LogLevel::Info, format!("Detected new local interface {}", intf)));
+                            udpmsgs.push(Control::NewIntf(intf.clone()));
+                            found = true;
+                        }
+                    }
+                    for intf in &runtime.listen {
+                        if !refresh.contains(intf) {
+                            logmsgs.push((LogLevel::Info, format!("Detected removed local interface {}", intf)));
+                            udpmsgs.push(Control::DropIntf(intf.clone()));
+                            found = true;
+                       }
+                    }
+                    if found {
+                        runtime.listen = refresh;
+                        // TODO: push this update to other nodes
+                    }
+                }
             },
             Control::Round(_round) => {
                 // Update interface stats

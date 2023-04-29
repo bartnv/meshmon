@@ -223,8 +223,9 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 target.sent += 1;
                                 target.waiting = true;
                             }
-                            else if debug {
+                            else {
                                 ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP ping to {}:{} via {}", target.ip, target.port, target.route))).await.unwrap();
+                                target.state = PortState::Idle;
                             }
                         }
                         if count > 15 { eprintln!("Node {} has {} unusable ports", name, count); }
@@ -362,6 +363,29 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                             }
                             continue;
                         }
+                    },
+                    Control::NewIntf(intf) => {
+                        match net::UdpSocket::bind(&intf).await {
+                            Ok(sock) => {
+                                ctrltx.send(Control::Log(LogLevel::Info, format!("Started new UDP listener on {}", intf))).await.unwrap();
+                                let sock = Arc::new(sock);
+                                let sa: SocketAddr = intf.parse().unwrap();
+                                socks.insert(sa.ip().to_string(), sock.clone());
+                                let readtx = readtx.clone();
+                                tokio::spawn(async move {
+                                    udpreader(sa, sock, readtx).await;
+                                });
+                                // Perhaps add the spawn() joinhandle to the HashMap so that we can kill the udpreader when the intf goes away
+                            },
+                            Err(e) => {
+                                ctrltx.send(Control::Log(LogLevel::Error, format!("Failed to bind to new UDP socket {}: {}", intf, e))).await.unwrap();
+                            }
+                        }
+                    },
+                    Control::DropIntf(intf) => {
+                        let sa: SocketAddr = intf.parse().unwrap();
+                        let ip = sa.ip().to_string();
+                        socks.remove(&ip);
                     },
                     c => {
                         ctrltx.send(Control::Log(LogLevel::Debug, format!("Received unexpected Control message {:?}", c))).await.unwrap();
