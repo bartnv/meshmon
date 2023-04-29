@@ -1063,9 +1063,7 @@ async fn handle_http(mut request: Request<Body>, config: Arc<RwLock<Config>>, da
     if hyper_tungstenite::is_upgrade_request(&request) {
         let (response, websocket) = hyper_tungstenite::upgrade(&mut request, None)?;
         tokio::spawn(async move {
-            if let Err(e) = handle_websocket(websocket, config, data).await {
-                eprintln!("Error in websocket connection: {}", e);
-            }
+            let _ = handle_websocket(websocket, config, data).await;
         });
         Ok(response)
     } else {
@@ -1117,11 +1115,9 @@ async fn handle_websocket(ws: HyperWebsocket, config: Arc<RwLock<Config>>, data:
     tokio::spawn(rx.forward(ws_tx));
 
     let mut res = JsonGraph { msg: "init", ..Default::default() };
-    let debug;
     {
         let config = config.read().unwrap();
         let mut runtime = config.runtime.write().unwrap();
-        debug = runtime.debug;
         runtime.wsclients.push(tx.clone());
 
         let nodes = runtime.graph.raw_nodes();
@@ -1165,14 +1161,8 @@ async fn handle_websocket(ws: HyperWebsocket, config: Arc<RwLock<Config>>, data:
             Message::Pong(msg) => {
                 println!("Received websocket pong message: {:02X?}", msg);
             }
-            Message::Close(msg) => {
-                if let Some(msg) = &msg {
-                    if debug { println!("Received websocket close message {}", msg.reason); }
-                }
-            },
-            Message::Frame(_) => {
-               unreachable!();
-            }
+            Message::Close(_) => {},
+            Message::Frame(_) => {}
         }
     }
 

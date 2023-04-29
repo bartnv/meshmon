@@ -3,7 +3,7 @@ use crypto_box::{ PublicKey, SalsaBox};
 use serde::{ Deserialize, Serialize };
 use rmp_serde::decode::Error as DecodeError;
 use tokio::{ net, sync };
-use ipnetwork::{ IpNetwork, Ipv6Network };
+use ipnetwork::IpNetwork;
 use pnet_datalink::interfaces;
 use lazy_static::lazy_static;
 use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
@@ -51,7 +51,6 @@ impl PingNode {
     }
 }
 struct PingPort {
-    label: String,
     ip: String,
     port: u16,
     route: String,
@@ -65,12 +64,7 @@ struct PingPort {
 impl PingPort {
     fn from(port: &str, route: Option<String>, enable: bool) -> PingPort {
         let sa: SocketAddr = port.parse().unwrap();
-        let label = match sa {
-            SocketAddr::V4(sa) => sa.ip().to_string(),
-            SocketAddr::V6(sa) => Ipv6Network::new(*sa.ip(), 64).unwrap().network().to_string()
-        };
         PingPort {
-            label,
             ip: sa.ip().to_string(),
             port: sa.port(),
             route: route.unwrap_or_default(),
