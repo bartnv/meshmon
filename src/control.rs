@@ -21,6 +21,7 @@ use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, tim
 
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
+static MAX_LINGER: u64 = 86400; // Seconds to keep visualising links that are down
 static INDEX_FILE: &str = include_str!("../web/index.html");
 static ICON_FILE: &[u8] = include_bytes!("../web/favicon.ico");
 
@@ -173,11 +174,12 @@ struct Path {
     to: String,
     fromintf: String,
     tointf: String,
-    losspct: u8
+    losspct: u8,
+    since: u64
 }
 impl Path {
     fn new(from: String, to: String, fromintf: String, tointf: String, losspct: u8) -> Path {
-        Path { from, to, fromintf, tointf, losspct }
+        Path { from, to, fromintf, tointf, losspct, since: unixtime() }
     }
 }
 impl PartialEq for Path {
@@ -434,6 +436,14 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     });
                 }
 
+                let cutoff = unixtime()-MAX_LINGER; // Remove results down for longer than MAX_LINGER
+                data.results.write().unwrap().retain(|res| { // TODO: replace with drain_filter() once stabilized
+                    if res.losspct < 99.9 || res.statesince > cutoff { return true; }
+                    logmsgs.push((LogLevel::Info, format!("Stopped reporting on {} {} via {} after being down for {}", res.node, res.port, res.intf, duration_from(unixtime()-res.statesince))));
+                    false
+                });
+                data.pathcache.write().unwrap().retain(|p| p.since > cutoff);
+
                 if config.modified.load(Ordering::Relaxed) {
                     if debug { logmsgs.push((LogLevel::Debug, "Saving configuration file".to_owned())); }
                     let data = toml::to_string_pretty(&*config).unwrap();
@@ -679,6 +689,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     let result = match results.iter_mut().find(|i| i.node == node && i.intf == intf && i.port == port) {
                         Some(result) => result,
                         None => {
+                            if rtt == 0 { continue; } // Don't create new PingResult for a loss Result
                             sort = true;
                             results.push(PingResult::new(node.clone(), intf.clone(), port.clone()));
                             results.last_mut().unwrap()
@@ -721,6 +732,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     Some(found) => {
                         if found.losspct == path.losspct { relay = false; }
                         else { found.losspct = path.losspct; }
+                        found.since = unixtime();
                     },
                     None => {
                         pathcache.push(path);
