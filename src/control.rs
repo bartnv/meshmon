@@ -713,7 +713,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 else {
                     data.push_ping(match rtt-min {
                       n if n > THRESHOLD => format!("Node {:10} {:26} -> {:26} {:>4}ms (min {}/dif {}/cat {})", node, shorten_ipv6(intf), shorten_ipv6(port), rtt, min, rtt-min, ((n-THRESHOLD) as f32).sqrt() as u16),
-                      _ => format!("Node {:10} {:39} -> {:39} {:>4}ms", node, intf, port, rtt)
+                      _ => format!("Node {:10} {:26} -> {:26} {:>4}ms", node, shorten_ipv6(intf), shorten_ipv6(port), rtt)
                     });
                 }
                 if results { println!("{}", data.ping.read().unwrap().front().unwrap()); }
@@ -944,15 +944,15 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
     let resultssize = match data.results.read().unwrap().len() { 0 => 3, n => n+2 } as u16;
     let vert1 = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(10), Constraint::Length(resultssize) ].as_ref())
+        .constraints([Constraint::Min(12), Constraint::Length(resultssize) ].as_ref())
         .split(f.size());
     let hori = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .constraints([Constraint::Max(105), Constraint::Percentage(50)].as_ref())
         .split(vert1[0]);
     let vert2 = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .constraints([Constraint::Min(6), Constraint::Length((data.intf.read().unwrap().len()+3) as u16)].as_ref())
         .split(hori[1]);
 
     let block = Block::default()
@@ -1011,13 +1011,13 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
             None => ' '
         };
         let header = format!("{:10} {:26} {} ", result.node, shorten_ipv6(result.port.to_string()), symbol);
-        let mut line = Vec::with_capacity((vert1[1].width-50).into());
+        let mut line = Vec::with_capacity((vert1[1].width).into());
         line.push(Span::from(header));
         if let Some(rtt) = result.last {
             line.push(draw_mark(rtt, result.min, mark));
         }
         else { line.push(Span::raw(" ")); }
-        for rtt in result.hist.iter().take((vert1[1].width-50).into()) {
+        for rtt in result.hist.iter().take((vert1[1].width-43).into()) {
             line.push(draw_mark(*rtt, result.min, mark));
         }
         content.push(ListItem::new(Spans::from(line)));
