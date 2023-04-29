@@ -759,7 +759,13 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     Key::Char('t') => {
                         if let Some(mut terminal) = term {
                             terminal.clear().unwrap();
+                            terminal.flush().unwrap();
+                            drop(terminal);
                             term = None;
+                            let log = data.log.read().unwrap();
+                            for (ts, msg) in log.iter().rev() {
+                                println!("{} {}", timestamp_from(*ts), msg);
+                            }
                         }
                         else { term = start_tui(data.clone()); }
                     },
