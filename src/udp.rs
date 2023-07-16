@@ -266,7 +266,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                         let route = local.ip().to_string();
                         let remoteip = remote.ip().to_string();
                         let res = node.ports.iter_mut().find(|p| p.ip == remoteip && p.route == route);
-                        let mut port = match res {
+                        let port = match res {
                             Some(port) => port,
                             None => {
                                 if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Learned new path {} for node {} with route {}", remote, name, route))).await.unwrap(); }

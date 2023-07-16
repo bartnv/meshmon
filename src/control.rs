@@ -348,7 +348,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 .contact_push(format!("mailto:{}", letsencrypt.unwrap()))
                 .cache(ConfigCache::new(&config))
                 .directory_lets_encrypt(true)
-                .tokio_incoming(tcp_incoming);
+                .tokio_incoming(tcp_incoming, Vec::new());
             ctrltx.send(Control::Log(LogLevel::Info, format!("Started HTTPS server on {}", arg))).await.unwrap();
             while let Some(tls) = tls_incoming.next().await {
                 let stream = tls.unwrap();
@@ -485,7 +485,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     let last = result.last.unwrap();
                     if last != 0 { // 0 result means a timeout, don't use it for stats
                         data.intf.write().unwrap().entry(result.intf.clone())
-                            .and_modify(|mut e| {
+                            .and_modify(|e| {
                                 if e.min > last { e.min = last; }
                                 if e.lag > last-result.min { e.lag = last-result.min; }
                             })
@@ -535,7 +535,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             },
             Control::NewLink(sender, from, to, seq) => {
                 let mut config = aconfig.write().unwrap();
-                if let Some(mut node) = config.nodes.iter_mut().find(|node| node.name == from) {
+                if let Some(node) = config.nodes.iter_mut().find(|node| node.name == from) {
                     if node.lastconnseq >= seq { continue; }
                     node.lastconnseq = seq;
                 }
@@ -687,7 +687,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             },
             Control::Ports(from, node, ports) => {
                 let mut config = aconfig.write().unwrap();
-                if let Some(mut entry) = config.nodes.iter_mut().find(|i| i.name == node) {
+                if let Some(entry) = config.nodes.iter_mut().find(|i| i.name == node) {
                     if ports != entry.listen {
                         entry.listen = ports.clone();
                         config.modified.store(true, Ordering::Relaxed);

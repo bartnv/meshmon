@@ -140,7 +140,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 
                             {
                                 let mut config = config.write().unwrap();
-                                let mut node = match config.nodes.iter_mut().find(|node| node.name == conn.nodename) {
+                                let node = match config.nodes.iter_mut().find(|node| node.name == conn.nodename) {
                                     Some(node) => node,
                                     None => {
                                         if !learn {
