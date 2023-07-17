@@ -536,7 +536,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             Control::NewLink(sender, from, to, seq) => {
                 let mut config = aconfig.write().unwrap();
                 if let Some(node) = config.nodes.iter_mut().find(|node| node.name == from) {
-                    if node.lastconnseq >= seq { continue; }
+                    if node.lastconnseq == seq { continue; }
                     node.lastconnseq = seq;
                 }
                 drop(config);
@@ -597,12 +597,12 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 };
             },
             Control::DropLink(sender, from, to) => {
-                let mut config = aconfig.write().unwrap();
+                let config = aconfig.write().unwrap();
                 let mut runtime = config.runtime.write().unwrap();
                 let fres = runtime.graph.find_node(&from);
                 let tres = runtime.graph.find_node(&to);
                 if let (Some(fnode), Some(tnode)) = (fres, tres) {
-                    let mut dropped = vec![];
+                    let dropped;
                     if let Some(edge) = runtime.graph.find_edge(fnode, tnode) {
                         runtime.graph.remove_edge(edge);
                         dropped = runtime.graph.drop_detached_nodes();
@@ -623,7 +623,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
                     }
                     drop(runtime);
-                    config.nodes.iter_mut().for_each(|node| { if dropped.contains(&node.name) { node.lastconnseq = 0; } });
+                    // config.nodes.iter_mut().for_each(|node| { if dropped.contains(&node.name) { node.lastconnseq = 0; } });
                 }
             },
             Control::NewPeer(name, tx, report) => {
