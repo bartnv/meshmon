@@ -1,14 +1,13 @@
 // #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, env, default::Default, sync::{ RwLock, atomic::AtomicBool }, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
+use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, default::Default, sync::{ RwLock, atomic::AtomicBool }, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
 use serde::{ Deserialize, Serialize };
 use tokio::{ fs, net, sync::mpsc };
 use hyper_tungstenite::tungstenite;
-use crypto_box::{ aead::Aead, aead::AeadCore, PublicKey, SecretKey, SalsaBox};
-use sysinfo::{ SystemExt };
+use crypto_box::{ aead::Aead, aead::{AeadCore, generic_array::GenericArray}, PublicKey, SecretKey, SalsaBox};
+use sysinfo::SystemExt;
 use petgraph::graph::UnGraph;
 use clap::{ Command, Arg, ArgAction };
 use pnet_datalink::interfaces;
-use generic_array::GenericArray;
 use chrono::{ TimeZone, offset::Local };
 use git_version::git_version;
 use termion::event::Key;
@@ -157,7 +156,8 @@ impl Protocol {
     }
 }
 
-const VERSION: &str = git_version!(args = ["--tags"], fallback = env!("CARGO_PKG_VERSION"));
+const VERSION: &str = git_version!(args = ["--always", "--dirty=-modified", "--tags"]);
+// const VERSION: &str = git_version!();
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config: Arc<RwLock<Config>>;
     if let Some(args) = args.subcommand_matches("init") {
         let mut rng = rand::rngs::OsRng;
-        let privkey = base64.encode(SecretKey::generate(&mut rng).as_bytes());
+        let privkey = base64.encode(SecretKey::generate(&mut rng).to_bytes());
         config = Arc::new(RwLock::new(
             Config {
                 name: args.get_one::<String>("name").unwrap().clone(),

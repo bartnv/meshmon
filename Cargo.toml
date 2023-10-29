@@ -16,7 +16,7 @@ serde = { version = "1", features = [ "derive" ] }
 serde_json = "*"
 rmp-serde = "1"
 ring = "*"
-crypto_box = "0.8"
+crypto_box = "0.9"
 rand = "0"
 byteorder = "*"
 sysinfo = "0"
