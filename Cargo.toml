@@ -20,13 +20,15 @@ crypto_box = "0.9"
 rand = "0"
 byteorder = "*"
 sysinfo = "0"
-generic-array = "0"
+generic-array = "1"
 petgraph = "0.6"
 clap = "4"
 pnet = "0"
 pnet_datalink = "0"
 ipnetwork = "0"
-hyper = { version = "*", features = [ "http1", "http2", "runtime", "server" ] }
+http-body-util = "0"
+hyper = { version = "1", features = [ "http1", "http2", "server" ] }
+hyper-util = "*"
 hyper-tungstenite = "*"
 lazy_static = "1"
 tui = { version = "0.19", default-features = false, features = ['termion'] }

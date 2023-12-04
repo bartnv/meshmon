@@ -9,8 +9,11 @@ use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen, screen::AlternateS
 use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use hyper::{Body, Request, Response };
+use http_body_util::Full;
+use hyper::{ Request, Response };
+use hyper::body::{ Bytes, Incoming };
 use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
 use rustls_acme::AcmeConfig;
 use serde::Serialize;
 use ring::digest::{ Context, SHA256 };
@@ -298,7 +301,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         let data = data.clone();
         let ctrltx = ctrltx.clone();
         tokio::spawn(async move {
-            let http = hyper::server::conn::Http::new();
+            let http = hyper::server::conn::http1::Builder::new();
             let service = service_fn(move |req| {
                 // if debug { println!("{} Received HTTP request {} {}", timestamp(), req.method(), req.uri()); }
                 handle_http(req, config.clone(), data.clone())
@@ -313,7 +316,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             ctrltx.send(Control::Log(LogLevel::Info, format!("Started HTTP server on {}", arg))).await.unwrap();
             while let Ok((stream, addr)) = tcp_listener.accept().await {
                 if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Incoming HTTP connection from {}", addr))).await.unwrap(); }
-                let conn = http.serve_connection(stream, service.clone()).with_upgrades();
+                let conn = http.serve_connection(TokioIo::new(stream), service.clone()).with_upgrades();
                 if let Err(e) = tokio::spawn(async move { conn.await }).await {
                     ctrltx.send(Control::Log(LogLevel::Error, format!("Error: {e}"))).await.unwrap();
                 }
@@ -325,7 +328,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         let data = data.clone();
         let ctrltx = ctrltx.clone();
         tokio::spawn(async move {
-            let http = hyper::server::conn::Http::new();
+            let http = hyper::server::conn::http1::Builder::new();
             let aconfig = config.clone();
             let service = service_fn(move |req| {
                 // if debug { println!("{} Received HTTPS request {} {}", timestamp(), req.method(), req.uri()); }
@@ -353,7 +356,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             while let Some(tls) = tls_incoming.next().await {
                 let stream = tls.unwrap();
                 if debug { ctrltx.send(Control::Log(LogLevel::Debug, format!("Incoming HTTPS connection from {}", stream.get_ref().get_ref().0.get_ref().peer_addr().unwrap_or("0.0.0.0:0".parse().unwrap())))).await.unwrap(); }
-                let conn = http.serve_connection(stream, service.clone()).with_upgrades();
+                let conn = http.serve_connection(TokioIo::new(stream), service.clone()).with_upgrades();
                 if let Err(e) = tokio::spawn(async move { conn.await }).await {
                     ctrltx.send(Control::Log(LogLevel::Error, format!("Error: {e}"))).await.unwrap();
                 }
@@ -1089,7 +1092,7 @@ fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
 //     Ok(ws.on_upgrade(move |socket| handle_websocket(socket, config, data)))
 // }
 
-async fn handle_http(mut request: Request<Body>, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+async fn handle_http(mut request: Request<Incoming>, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     if hyper_tungstenite::is_upgrade_request(&request) {
         let (response, websocket) = hyper_tungstenite::upgrade(&mut request, None)?;
         tokio::spawn(async move {
@@ -1098,9 +1101,9 @@ async fn handle_http(mut request: Request<Body>, config: Arc<RwLock<Config>>, da
         Ok(response)
     } else {
         match request.uri().path() {
-            "/" => Ok(Response::new(Body::from(INDEX_FILE))),
-            "/favicon.ico" => Ok(Response::new(Body::from(ICON_FILE))),
-            _ => Ok(Response::builder().status(hyper::StatusCode::NOT_FOUND).body(Body::empty()).unwrap())
+            "/" => Ok(Response::new(Full::<Bytes>::from(INDEX_FILE))),
+            "/favicon.ico" => Ok(Response::new(Full::<Bytes>::from(ICON_FILE))),
+            _ => Ok(Response::builder().status(hyper::StatusCode::NOT_FOUND).body(Full::<Bytes>::from("")).unwrap())
         }
     }
 
