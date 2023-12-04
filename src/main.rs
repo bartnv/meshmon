@@ -169,7 +169,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .arg_required_else_help(true)
         .subcommand(Command::new("init")
             .about("Create a new configuration file and exit")
-            .arg(Arg::new("name").short('n').long("name").help("The name for this node").default_value("MyName"))
+            .arg(Arg::new("name").short('n').long("name").help("The name for this node").default_value("ChangeMe"))
+            .arg(Arg::new("port").short('p').long("port").help("The TCP/UDP listen port to be used").default_value("7531"))
             .arg(Arg::new("letsencrypt").long("letsencrypt").num_args(1).value_name("email").help("Specify the account email address used with Let's Encrypt for --https"))
         )
         .subcommand(Command::new("run")
@@ -193,7 +194,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config = Arc::new(RwLock::new(
             Config {
                 name: args.get_one::<String>("name").unwrap().clone(),
-                listen: vec!["[::]:7531".to_owned()],
+                listen: vec![format!("[::]:{}", args.get_one::<String>("port").unwrap())],
                 privkey,
                 nodes: Vec::new(),
                 cache: HashMap::new(),
