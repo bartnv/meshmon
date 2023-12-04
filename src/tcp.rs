@@ -260,8 +260,9 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                     None => {
                                         let text = format!("Learned public key for node {}", name);
                                         control.push(Control::Log(LogLevel::Info, text));
-                                        config.nodes.push(Node { name, pubkey, .. Default::default() });
+                                        config.nodes.push(Node { name: name.clone(), pubkey, .. Default::default() });
                                         config.modified.store(true, Ordering::Relaxed);
+                                        control.push(Control::Scan(name, myname.clone()));
                                     }
                                 }
                             }
