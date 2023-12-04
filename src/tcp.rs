@@ -148,6 +148,8 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                             control.push(Control::Log(LogLevel::Info, text));
                                             return;
                                         }
+                                        let text = format!("Connection accepted from new node {} with pubkey {}", conn.nodename, pubkey);
+                                        control.push(Control::Log(LogLevel::Info, text));
                                         config.nodes.push(Node { name: conn.nodename.clone(), pubkey: pubkey.clone(), .. Default::default() });
                                         config.modified.store(true, Ordering::Relaxed);
                                         config.nodes.last_mut().unwrap()
