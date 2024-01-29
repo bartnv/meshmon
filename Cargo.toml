@@ -32,7 +32,7 @@ hyper-util = "*"
 hyper-tungstenite = "*"
 lazy_static = "1"
 tui = { version = "0.19", default-features = false, features = ['termion'] }
-termion = "2"
+termion = "3"
 chrono = "0"
 git-version = "*"
 rustls-acme = { version = "*", features = [ "tokio" ] }

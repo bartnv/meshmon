@@ -4,7 +4,6 @@ use serde::{ Deserialize, Serialize };
 use tokio::{ fs, net, sync::mpsc };
 use hyper_tungstenite::tungstenite;
 use crypto_box::{ aead::Aead, aead::{AeadCore, generic_array::GenericArray}, PublicKey, SecretKey, SalsaBox};
-use sysinfo::SystemExt;
 use petgraph::graph::UnGraph;
 use clap::{ Command, Arg, ArgAction };
 use pnet_datalink::interfaces;
@@ -55,7 +54,6 @@ struct Runtime {
     listen: Vec<String>,
     privkey: Option<SecretKey>,
     pubkey: Option<PublicKey>,
-    sysinfo: Option<sysinfo::System>,
     graph: UnGraph<String, u32>,
     msp: UnGraph<String, u32>,
     wsclients: Vec<mpsc::UnboundedSender<Result<tungstenite::Message, tungstenite::Error>>>,
@@ -143,16 +141,13 @@ impl Protocol {
         let pubkey = base64.encode(config.read().unwrap().runtime.read().unwrap().pubkey.as_ref().unwrap().as_bytes());
         Protocol::Intro { version: 1, name: config.read().unwrap().name.clone(), pubkey }
     }
-    fn new_crypt(config: &Arc<RwLock<Config>>) -> Protocol {
-        let config = config.read().unwrap();
-        let runtime = config.runtime.read().unwrap();
-        let sysinfo = runtime.sysinfo.as_ref().unwrap();
+    fn new_crypt() -> Protocol {
         let osversion = format!("{} {} ({})",
-            sysinfo.name().unwrap_or_else(|| "<unknown>".to_owned()),
-            sysinfo.os_version().unwrap_or_else(|| "<unknown>".to_owned()),
-            sysinfo.kernel_version().unwrap_or_else(|| "<unknown>".to_owned())
+            sysinfo::System::name().unwrap_or_else(|| "<unknown>".to_owned()),
+            sysinfo::System::os_version().unwrap_or_else(|| "<unknown>".to_owned()),
+            sysinfo::System::kernel_version().unwrap_or_else(|| "<unknown>".to_owned())
         );
-        Protocol::Crypt { boottime: sysinfo.boot_time(), osversion }
+        Protocol::Crypt { boottime: sysinfo::System::boot_time(), osversion }
     }
 }
 
@@ -231,7 +226,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.https = args.get_one::<String>("https").map(|e| e.clone());
         runtime.results = args.get_flag("results");
         runtime.debug = args.get_flag("debug");
-        runtime.sysinfo = Some(sysinfo::System::new_with_specifics(sysinfo::RefreshKind::new()));
         runtime.graph.add_node(config.name.clone());
         if runtime.https.is_some() && config.letsencrypt.is_none() {
             eprintln!("Account email for Let's Encrypt not set; use --letsencrypt once to enable --https");

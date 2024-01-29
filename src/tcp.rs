@@ -175,7 +175,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
 
                             if active {
                                 if debug { control.push(Control::Log(LogLevel::Debug, String::from("Switching to a secure line..."))); }
-                                frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
+                                frames.push(build_frame(&sbox, Protocol::new_crypt()));
                             }
                             else {
                                 frames.push(build_frame(&None, Protocol::new_intro(&config)));
@@ -195,7 +195,7 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                                 frames.push(build_frame(&sbox, Protocol::Ports { node: myname.clone(), ports: runtime.listen.clone() }));
                             }
                             else {
-                                frames.push(build_frame(&sbox, Protocol::new_crypt(&config)));
+                                frames.push(build_frame(&sbox, Protocol::new_crypt()));
                             }
 
                             let dur = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
