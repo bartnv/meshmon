@@ -289,7 +289,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         let runtime = config.runtime.read().unwrap();
         (config.name.clone(), runtime.results, runtime.debug, runtime.http.clone(), runtime.https.clone(), config.letsencrypt.clone())
     };
-    let mut nodeidx = usize::MAX-1;
+    let mut nodeidx = 0;
     let mut relaymsgs: Vec<(String, Protocol, bool)> = vec![];
     let mut directmsgs: Vec<(String, Protocol)> = vec![];
     let mut udpmsgs: Vec<Control> = vec![];
@@ -412,7 +412,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     }
                 }
                 else {
-                    nodeidx = usize::MAX-1; // Reset node index for regular connections
+                    nodeidx = 0; // Reset node index for regular connections
                     if ticks%60 == 0 { // Only check for weak connections once every hour
                         let runtime = config.runtime.read().unwrap();
                         if runtime.graph.node_count() > 4 {
