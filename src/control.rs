@@ -539,7 +539,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             Control::NewLink(sender, from, to, seq) => {
                 let mut config = aconfig.write().unwrap();
                 if let Some(node) = config.nodes.iter_mut().find(|node| node.name == from) {
-                    if node.lastconnseq == seq { continue; }
+                    if node.lastconnseq == seq { continue; } // Duplicate message; drop it
                     node.lastconnseq = seq;
                 }
                 drop(config);
@@ -697,9 +697,6 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         relaymsgs.push((from, Protocol::Ports { node, ports }, false));
                     }
                 }
-            },
-            Control::Relay(from, proto) => {
-                relaymsgs.push((from, proto, false));
             },
             Control::Scan(from, to) => {
                 if to == myname {

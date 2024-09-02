@@ -108,7 +108,6 @@ pub enum Control {
     NewLink(String, String, String, u32), // Sender name, link from, link to, link seqno
     DropLink(String, String, String), // Sender name, link from, link to
     Ports(String, String, Vec<String>), // From node, about node, ports
-    Relay(String, Protocol), // Sender name, protocol message
     Send(Protocol), // Protocol message to send
     Scan(String, String), // From node, to node
     ScanNode(String, bool), // Node name to (re)scan, initiated externally
