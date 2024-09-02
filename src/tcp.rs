@@ -277,10 +277,10 @@ pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx
                             }
                             let config = config.read().unwrap();
                             if from != myname && !config.nodes.iter().any(|node| node.name == from) {
-                                frames.push(build_frame(&sbox, Protocol::Node{ name: from.clone(), pubkey: String::new() }));
+                                frames.push(build_frame(&sbox, Protocol::Node { name: from.clone(), pubkey: String::new() }));
                             }
                             if to != myname && !config.nodes.iter().any(|node| node.name == to) {
-                                frames.push(build_frame(&sbox, Protocol::Node{ name: to.clone(), pubkey: String::new() }));
+                                frames.push(build_frame(&sbox, Protocol::Node { name: to.clone(), pubkey: String::new() }));
                             }
                             if conn.state == ConnState::Encrypted { // Buffer links received before Sync
                                 links.push((from, to, seq));
