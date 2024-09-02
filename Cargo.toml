@@ -7,15 +7,15 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = [ "full" ] }
 tokio-util = { version = "*", features = [ "compat" ] }
-tokio-stream = { version = "*", features = [ "net" ] }
-futures-util = "*"
-async-trait = "*"
+tokio-stream = { version = "*", features = [ "net" ], optional = true }
+futures-util = { version = "*", optional = true }
+async-trait = { version = "*", optional = true }
 toml = "0"
 base64 = "0"
 serde = { version = "1", features = [ "derive" ] }
 serde_json = "*"
 rmp-serde = "1"
-ring = "*"
+ring = { version = "*", optional = true }
 crypto_box = "0.9"
 rand = "0"
 byteorder = "*"
@@ -26,18 +26,22 @@ clap = "4"
 pnet = "0"
 pnet_datalink = "0"
 ipnetwork = "0"
-http-body-util = "0"
-hyper = { version = "1", features = [ "http1", "http2", "server" ] }
-hyper-util = "*"
-hyper-tungstenite = "*"
+hyper = { version = "1", features = [ "http1", "http2", "server" ], optional = true }
+hyper-util = { version = "*", optional = true }
+hyper-tungstenite = { version = "*", optional = true }
+http-body-util = { version = "0", optional =  true }
+rustls-acme = { version = "*", features = [ "tokio" ], optional = true }
 lazy_static = "1"
-tui = { version = "0.19", default-features = false, features = ['termion'] }
-termion = "3"
+tui = { version = "0.19", default-features = false, features = ['termion'], optional = true }
+termion = { version = "3", optional = true }
 chrono = "0"
 git-version = "*"
-rustls-acme = { version = "*", features = [ "tokio" ] }
 regex = "*"
+
+[features]
+web = ["dep:hyper", "dep:hyper-util", "dep:hyper-tungstenite", "dep:http-body-util", "dep:tokio-stream", "dep:futures-util", "dep:rustls-acme", "dep:async-trait", "dep:ring"]
+tui = ["dep:tui", "dep:termion"]
 
 [profile.release]
 strip = true
-#lto = "thin"
+#lto = true

@@ -1,31 +1,50 @@
+// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use std::{ sync::{ RwLock, Arc }, sync::atomic::Ordering, mem::drop, collections::{ HashMap, VecDeque }, cmp };
-use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
 use regex::Regex;
-use tokio::{ fs, sync, net::TcpListener };
-use tokio_stream::wrappers::TcpListenerStream;
-use futures_util::stream::StreamExt;
+use tokio::{ fs, sync };
 use petgraph::{ graph, graph::UnGraph, data::FromElements, algo };
-use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen, screen::AlternateScreen, raw::RawTerminal, input::TermRead, event::Key };
-use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use http_body_util::Full;
-use hyper::{ Request, Response };
-use hyper::body::{ Bytes, Incoming };
-use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
-use rustls_acme::AcmeConfig;
-use serde::Serialize;
-use ring::digest::{ Context, SHA256 };
-use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
-use async_trait::async_trait;
-use rustls_acme::{ AccountCache, CertCache };
+#[allow(unused_imports)]
 use crate::{ Config, Node, Control, Protocol, LogLevel, unixtime, timestamp, timestamp_from, get_local_interfaces, duration_from };
+
+#[cfg(feature = "web")]
+use http_body_util::Full;
+#[cfg(feature = "web")]
+use hyper::{ Request, Response, body::{ Bytes, Incoming }, service::service_fn };
+#[cfg(feature = "web")]
+use hyper_util::rt::TokioIo;
+#[cfg(feature = "web")]
+use hyper_tungstenite::{HyperWebsocket, tungstenite::Message};
+#[cfg(feature = "web")]
+use tokio_stream::wrappers::TcpListenerStream;
+#[cfg(feature = "web")]
+use futures_util::stream::StreamExt;
+#[cfg(feature = "web")]
+use rustls_acme::{ AcmeConfig, AccountCache, CertCache };
+#[cfg(feature = "web")]
+use serde::Serialize;
+#[cfg(feature = "web")]
+use tokio::net::TcpListener;
+#[cfg(feature = "web")]
+use ring::digest::{ Context, SHA256 };
+#[cfg(feature = "web")]
+use async_trait::async_trait;
+#[cfg(feature = "web")]
+use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
+
+#[cfg(feature = "tui")]
+use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen, screen::AlternateScreen, raw::RawTerminal, input::TermRead, event::Key };
+#[cfg(feature = "tui")]
+use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
+
 
 static HISTSIZE: usize = 1440;
 static THRESHOLD: u16 = 4;
 static MAX_LINGER: u64 = 86400; // Seconds to keep visualising links that are down
+#[cfg(feature = "web")]
 static INDEX_FILE: &str = include_str!("../web/index.html");
+#[cfg(feature = "web")]
 static ICON_FILE: &[u8] = include_bytes!("../web/favicon.ico");
 
 trait GraphExt {
@@ -166,6 +185,7 @@ impl Data {
     }
 }
 struct IntfStats {
+    #[allow(dead_code)]
     symbol: char,
     min: u16,
     lag: u16
@@ -191,9 +211,11 @@ impl PartialEq for Path {
     }
 }
 
+#[cfg(feature = "web")]
 struct ConfigCache {
     config: Arc<RwLock<Config>>
 }
+#[cfg(feature = "web")]
 impl ConfigCache {
     fn new(config: &Arc<RwLock<Config>>) -> ConfigCache {
         ConfigCache {
@@ -222,6 +244,7 @@ impl ConfigCache {
     }
 }
 #[async_trait]
+#[cfg(feature = "web")]
 impl CertCache for ConfigCache {
     type EC = std::io::Error;
     async fn load_cert(
@@ -246,6 +269,7 @@ impl CertCache for ConfigCache {
     }
 }
 #[async_trait]
+#[cfg(feature = "web")]
 impl AccountCache for ConfigCache {
     type EA = std::io::Error;
     async fn load_account(
@@ -271,6 +295,7 @@ impl AccountCache for ConfigCache {
     }
 }
 
+#[cfg(feature = "tui")]
 fn start_tui(data: Arc<Data>) -> Option<Terminal<TermionBackend<AlternateScreen<RawTerminal<std::io::Stdout>>>>> {
     let stdout = std::io::stdout().into_raw_mode().unwrap();
     let stdout = stdout.into_alternate_screen().unwrap();
@@ -284,6 +309,7 @@ fn start_tui(data: Arc<Data>) -> Option<Terminal<TermionBackend<AlternateScreen<
 pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Control>, ctrltx: sync::mpsc::Sender<Control>, udptx: sync::mpsc::Sender<Control>) {
     let mut peers = HashMap::new();
     let mynode = graph::NodeIndex::new(0);
+    #[allow(unused_variables)]
     let (myname, results, debug, http, https, letsencrypt) = {
         let config = aconfig.read().unwrap();
         let runtime = config.runtime.read().unwrap();
@@ -296,6 +322,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let mut logmsgs: Vec<(LogLevel, String)> = vec![];
     let data: Arc<Data> = Arc::new(Default::default());
 
+    #[cfg(feature = "web")]
     if let Some(arg) = http {
         let config = aconfig.clone();
         let data = data.clone();
@@ -323,6 +350,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             }
         });
     }
+    #[cfg(feature = "web")]
     if let Some(arg) = https {
         let config = aconfig.clone();
         let data = data.clone();
@@ -364,11 +392,14 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         });
     }
 
+    #[cfg(feature = "tui")]
     let mut term = match aconfig.read().unwrap().runtime.read().unwrap().tui {
         false => None,
         true => start_tui(data.clone())
     };
+    #[cfg(feature = "tui")]
     let stdintx = ctrltx.clone();
+    #[cfg(feature = "tui")]
     tokio::task::spawn_blocking(move || { // Thread to wait for input events
         let stdin = std::io::stdin();
         let keys = stdin.keys();
@@ -516,14 +547,17 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         }
                         else if result.hist.len() == 1 { report = true; }
                         if report {
-                            let config = aconfig.read().unwrap();
-                            let mut runtime = config.runtime.write().unwrap();
-                            if !runtime.wsclients.is_empty() {
-                                let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
-                                    \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
-                                    &myname, &result.intf, &result.node, &result.port, result.losspct.round()
-                                );
-                                runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                            #[cfg(feature = "web")]
+                            {
+                                let config = aconfig.read().unwrap();
+                                let mut runtime = config.runtime.write().unwrap();
+                                if !runtime.wsclients.is_empty() {
+                                    let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
+                                        \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
+                                        &myname, &result.intf, &result.node, &result.port, result.losspct.round()
+                                    );
+                                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                                }
                             }
                             let path = Protocol::Path { from: myname.clone(), to: result.node.clone(), fromintf: result.intf.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 };
                             relaymsgs.push((myname.clone(), path, false));
@@ -589,6 +623,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if changes {
                     relaymsgs.push((sender, Protocol::Link { from: from.clone(), to: to.clone(), seq }, true));
                     runtime.msp = calculate_msp(&runtime.graph);
+                    #[cfg(feature = "web")]
                     if !runtime.wsclients.is_empty() {
                         let mode = match runtime.msp.contains_edge(fromidx, toidx) {
                             true => "active",
@@ -621,6 +656,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         runtime.msp = calculate_msp(&runtime.graph);
                         relaymsgs.push((sender, Protocol::Drop { from: from.clone(), to: to.clone() }, true));
                     }
+                    #[cfg(feature = "web")]
                     if !runtime.wsclients.is_empty() {
                         let json = format!("{{ \"msg\": \"droplink\", \"from\": \"{from}\", \"to\": \"{to}\" }}");
                         runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
@@ -648,11 +684,14 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         directmsgs.push((name.clone(), Protocol::Path { from: path.from.clone(), to: path.to.clone(), fromintf: path.fromintf.clone(), tointf: path.tointf.clone(), losspct: path.losspct }));
                     }
                 }
-                let config = aconfig.read().unwrap();
-                let mut runtime = config.runtime.write().unwrap();
-                if !runtime.wsclients.is_empty() {
-                    let json = format!("{{ \"msg\": \"newlink\", \"from\": \"{}\", \"to\": \"{name}\", \"mode\": \"unknown\" }}", myname.clone());
-                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                #[cfg(feature = "web")]
+                {
+                    let config = aconfig.read().unwrap();
+                    let mut runtime = config.runtime.write().unwrap();
+                    if !runtime.wsclients.is_empty() {
+                        let json = format!("{{ \"msg\": \"newlink\", \"from\": \"{}\", \"to\": \"{name}\", \"mode\": \"unknown\" }}", myname.clone());
+                        runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                    }
                 }
             },
             Control::DropPeer(name) => {
@@ -680,6 +719,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     }
                     redraw = true;
                 }
+                #[cfg(feature = "web")]
                 if !runtime.wsclients.is_empty() {
                     let json = format!("{{ \"msg\": \"droplink\", \"from\": \"{}\", \"to\": \"{name}\" }}", myname.clone());
                     runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
@@ -764,20 +804,24 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 }
 
                 if relay {
-                    let config = aconfig.read().unwrap();
-                    let mut runtime = config.runtime.write().unwrap();
-                    if !runtime.wsclients.is_empty() {
-                        let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
-                            \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
-                            &from, &fromintf, &to, &tointf, losspct
-                        );
-                        runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                    #[cfg(feature = "web")]
+                    {
+                        let config = aconfig.read().unwrap();
+                        let mut runtime = config.runtime.write().unwrap();
+                        if !runtime.wsclients.is_empty() {
+                            let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
+                                \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
+                                &from, &fromintf, &to, &tointf, losspct
+                            );
+                            runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                        }
                     }
     
                     let protocol = Protocol::Path { from, to, fromintf, tointf, losspct };
                     relaymsgs.push((peer, protocol, false));
                 }
             },
+            #[cfg(feature = "tui")]
             Control::InputKey(key) => {
                 match key {
                     Key::Char('t') => {
@@ -864,17 +908,21 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 if level == LogLevel::Debug && !debug { continue; }
                 if level != LogLevel::Debug {
                     data.push_log(unixtime(), text.clone());
-                    let config = aconfig.read().unwrap();
-                    let mut runtime = config.runtime.write().unwrap();
-                    if !runtime.wsclients.is_empty() {
-                        let json = serde_json::json!({
-                            "msg": "log",
-                            "ts": unixtime(),
-                            "text": text
-                        }).to_string();
-                        runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                    #[cfg(feature = "web")]
+                    {
+                        let config = aconfig.read().unwrap();
+                        let mut runtime = config.runtime.write().unwrap();
+                        if !runtime.wsclients.is_empty() {
+                            let json = serde_json::json!({
+                                "msg": "log",
+                                "ts": unixtime(),
+                                "text": text
+                            }).to_string();
+                            runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                        }
                     }
                 }
+                #[cfg(feature = "tui")]
                 if term.is_none() { println!("{} {}", timestamp(), text); }
                 else { redraw = true; }
             }
@@ -888,6 +936,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             });
         }
 
+        #[cfg(feature = "tui")]
         if redraw {
             if let Some(ref mut term) = term {
                 term.draw(|f| draw(f, data.clone())).unwrap();
@@ -926,13 +975,16 @@ fn check_loss(config: &Arc<RwLock<Config>>, results: &RwLock<Vec<PingResult>>) -
             check_loss_port(result);
             if result.losspct.round() != prev {
                 let config = config.read().unwrap();
-                let mut runtime = config.runtime.write().unwrap();
-                if !runtime.wsclients.is_empty() {
-                    let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
-                        \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
-                        &config.name, &result.intf, &result.node, &result.port, result.losspct.round()
-                    );
-                    runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                #[cfg(feature = "web")]
+                {
+                    let mut runtime = config.runtime.write().unwrap();
+                    if !runtime.wsclients.is_empty() {
+                        let json = format!("{{ \"msg\": \"pathstate\", \"fromname\": \"{}\", \"fromintf\": \"{}\",
+                            \"toname\": \"{}\", \"tointf\": \"{}\", \"losspct\": {} }}",
+                            &config.name, &result.intf, &result.node, &result.port, result.losspct.round()
+                        );
+                        runtime.wsclients.retain(|tx| tx.send(Ok(Message::text(&json))).is_ok());
+                    }
                 }
                 let path = Protocol::Path { from: config.name.clone(), to: result.node.clone(), fromintf: result.intf.clone(), tointf: result.port.clone(), losspct: result.losspct.round() as u8 };
                 ret.push(path);
@@ -970,6 +1022,7 @@ fn check_loss_port(result: &mut PingResult) {
     }
 }
 
+#[cfg(feature = "tui")]
 fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
     let resultssize = match data.results.read().unwrap().len() { 0 => 3, n => n+2 } as u16;
     let vert1 = Layout::default()
@@ -1057,6 +1110,7 @@ fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
     f.render_widget(list, vert1[1]);
 }
 
+#[cfg(feature = "tui")]
 fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
     lazy_static!{
         static ref STYLES: Vec<Style> = vec![
@@ -1089,6 +1143,7 @@ fn draw_mark(rtt: u16, min: u16, mark: &'static str) -> Span<'static> {
 //     Ok(ws.on_upgrade(move |socket| handle_websocket(socket, config, data)))
 // }
 
+#[cfg(feature = "web")]
 async fn handle_http(mut request: Request<Incoming>, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     if hyper_tungstenite::is_upgrade_request(&request) {
         let (response, websocket) = hyper_tungstenite::upgrade(&mut request, None)?;
@@ -1106,6 +1161,7 @@ async fn handle_http(mut request: Request<Incoming>, config: Arc<RwLock<Config>>
 
 }
 
+#[cfg(feature = "web")]
 async fn handle_websocket(ws: HyperWebsocket, config: Arc<RwLock<Config>>, data: Arc<Data>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     #[derive(Default, Serialize)]
     struct JsonGraph {

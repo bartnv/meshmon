@@ -2,15 +2,19 @@
 use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, default::Default, sync::{ RwLock, atomic::AtomicBool }, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
 use serde::{ Deserialize, Serialize };
 use tokio::{ fs, net, sync::mpsc };
-use hyper_tungstenite::tungstenite;
 use crypto_box::{ aead::Aead, aead::{AeadCore, generic_array::GenericArray}, PublicKey, SecretKey, SalsaBox};
 use petgraph::graph::UnGraph;
 use clap::{ Command, Arg, ArgAction };
 use pnet_datalink::interfaces;
 use chrono::{ TimeZone, offset::Local };
 use git_version::git_version;
-use termion::event::Key;
 use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
+
+#[cfg(feature = "web")]
+use hyper_tungstenite::tungstenite;
+
+#[cfg(feature = "tui")]
+use termion::event::Key;
 
 mod control;
 mod tcp;
@@ -56,6 +60,7 @@ struct Runtime {
     pubkey: Option<PublicKey>,
     graph: UnGraph<String, u32>,
     msp: UnGraph<String, u32>,
+    #[cfg(feature = "web")]
     wsclients: Vec<mpsc::UnboundedSender<Result<tungstenite::Message, tungstenite::Error>>>,
     connseq: u32,
     acceptnewnodes: bool,
@@ -116,6 +121,7 @@ pub enum Control {
     Result(String, String, String, u16), // Node name, interface address, port, rtt
     Log(LogLevel, String), // Status update
     Path(String, String, String, String, String, u8), // Peer name, from name, to name, from intf, to intf, losspct
+    #[cfg(feature = "tui")]
     InputKey(Key) // Termion key event from tty stdin
 }
 
@@ -226,8 +232,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.results = args.get_flag("results");
         runtime.debug = args.get_flag("debug");
         runtime.graph.add_node(config.name.clone());
+        if cfg!(not(feature = "tui")) && runtime.tui == true {
+            eprintln!("Error: meshmon needs to be compiled with the \"tui\" feature to use the --tui option");
+            return Ok(());
+        }
+        if cfg!(not(feature = "web")) && (runtime.http.is_some() || runtime.https.is_some()) {
+            eprintln!("Error: meshmon needs to be compiled with the \"web\" feature to use the --http and --https options");
+            return Ok(());
+        }
         if runtime.https.is_some() && config.letsencrypt.is_none() {
-            eprintln!("Account email for Let's Encrypt not set; use --letsencrypt once to enable --https");
+            eprintln!("Error: account email for Let's Encrypt not set; use --letsencrypt once to enable --https");
             return Ok(());
         }
         println!("Local listen ports: {}", runtime.listen.join(", "));
