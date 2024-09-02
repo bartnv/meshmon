@@ -21,18 +21,13 @@ static MAX_LINGER: u64 = 86400; // Seconds to keep visualising links that are do
 
 trait GraphExt {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex>;
-    fn has_node(&self, name: &str) -> bool;
     fn drop_detached_nodes(&mut self) -> Vec<String>;
-    fn print(&self);
     fn find_weakly_connected_nodes(&self) -> Vec<String>;
     fn weakly_connected_dfs(&self, v: graph::NodeIndex, depth: u8, visited: &mut HashMap<graph::NodeIndex, u8>, found: &mut Vec<String>, parent: Option<graph::NodeIndex>) -> (u8, Vec<String>);
 }
 impl GraphExt for UnGraph<String, u32> {
     fn find_node(&self, name: &str) -> Option<graph::NodeIndex> {
         self.node_indices().find(|i| self[*i] == name)
-    }
-    fn has_node(&self, name: &str) -> bool {
-        self.node_indices().any(|i| self[i] == name)
     }
     fn drop_detached_nodes(&mut self) -> Vec<String> {
         let mynode = graph::NodeIndex::new(0);
@@ -50,11 +45,6 @@ impl GraphExt for UnGraph<String, u32> {
         }
         if !retain.is_empty() { self.retain_nodes(|_, nodeidx| retain.contains(&nodeidx)); }
         dropped
-    }
-    fn print(&self) {
-        for edge in self.raw_edges().iter() {
-            println!("Edge: {} -> {} ({})", self[edge.source()], self[edge.target()], edge.weight);
-        }
     }
 
     fn find_weakly_connected_nodes(&self) -> Vec<String> {
