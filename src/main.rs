@@ -194,7 +194,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 cache: HashMap::new(),
                 targetpeers: 3,
                 dotfile: None,
-                letsencrypt: args.get_one::<String>("letsencrypt").map(|e| e.clone()),
+                letsencrypt: args.get_one::<String>("letsencrypt").cloned(),
                 modified: AtomicBool::new(false),
                 runtime: RwLock::new(Default::default()),
             }
@@ -221,8 +221,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key());
         runtime.acceptnewnodes = args.get_flag("acceptnewnodes");
         runtime.tui = args.get_flag("tui");
-        runtime.http = args.get_one::<String>("http").map(|e| e.clone());
-        runtime.https = args.get_one::<String>("https").map(|e| e.clone());
+        runtime.http = args.get_one::<String>("http").cloned();
+        runtime.https = args.get_one::<String>("https").cloned();
         runtime.results = args.get_flag("results");
         runtime.debug = args.get_flag("debug");
         runtime.graph.add_node(config.name.clone());
@@ -272,7 +272,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Connect to the nodes passed in --connect arguments
-    if let Some(params) = args.get_many::<String>("connect").map(|e| e.clone()) {
+    if let Some(params) = args.get_many::<String>("connect") {
         for port in params {
             let ports = vec![port.to_string()];
             let config = config.clone();

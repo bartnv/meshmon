@@ -289,10 +289,8 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 if let Err(e) = sock.send_to(&frame, &remote).await {
                                     ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {} via {}: {}", remote, local.ip(), e))).await.unwrap();
                                 }
-                                if port.state == PortState::Idle {
-                                    if !send_ping(&socks, &node.sbox, port, &port.route, true).await && debug {
-                                        ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {}:{} via {}", port.ip, port.port, port.route))).await.unwrap();
-                                    }
+                                if port.state == PortState::Idle && !send_ping(&socks, &node.sbox, port, &port.route, true).await && debug {
+                                    ctrltx.send(Control::Log(LogLevel::Debug, format!("Failed to send UDP packet to {}:{} via {}", port.ip, port.port, port.route))).await.unwrap();
                                 }
                                 if port.state != PortState::Ok {
                                     if debug && port.state > PortState::Loss(1) {
@@ -322,7 +320,7 @@ pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control
                                 }
                                 match port.state {
                                     PortState::Idle => { port.state = PortState::Init(1); },
-                                    PortState::Init(n) if n == 5 => {
+                                    PortState::Init(5) => {
                                         port.state = PortState::Ok;
                                         if debug { ctrltx.send(Control::Log(LogLevel::Status, format!("Started monitoring node {} {}:{} via {}", name, port.ip, port.port, port.route))).await.unwrap(); }
                                     },

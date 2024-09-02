@@ -371,8 +371,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
     let stdintx = ctrltx.clone();
     tokio::task::spawn_blocking(move || { // Thread to wait for input events
         let stdin = std::io::stdin();
-        let mut keys = stdin.keys();
-        while let Some(event) = keys.next() {
+        let keys = stdin.keys();
+        for event in keys {
             match event {
                 Ok(key) => match tokio::runtime::Runtime::new().unwrap().block_on(stdintx.send(Control::InputKey(key))) {
                     Ok(_) => (),
