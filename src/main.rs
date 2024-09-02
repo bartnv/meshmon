@@ -1,5 +1,5 @@
 // #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ str, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, default::Default, sync::{ RwLock, atomic::AtomicBool }, error::Error, sync::Arc, convert::TryInto, collections::HashMap };
+use std::{ str, cmp, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }, default::Default, sync::{ RwLock, atomic::AtomicBool }, error::Error, sync::Arc, convert::TryInto, collections::{ HashMap, VecDeque } };
 use serde::{ Deserialize, Serialize };
 use tokio::{ fs, net, sync::mpsc };
 use crypto_box::{ aead::Aead, aead::{AeadCore, generic_array::GenericArray}, PublicKey, SecretKey, SalsaBox};
@@ -9,6 +9,9 @@ use pnet_datalink::interfaces;
 use chrono::{ TimeZone, offset::Local };
 use git_version::git_version;
 use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
+use lazy_static::lazy_static;
+use regex::Regex;
+
 
 #[cfg(feature = "web")]
 use hyper_tungstenite::tungstenite;
@@ -19,6 +22,10 @@ use termion::event::Key;
 mod control;
 mod tcp;
 mod udp;
+mod web;
+mod tui;
+
+static HISTSIZE: usize = 1440;
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
@@ -153,6 +160,98 @@ impl Protocol {
             sysinfo::System::kernel_version().unwrap_or_else(|| "<unknown>".to_owned())
         );
         Protocol::Crypt { boottime: sysinfo::System::boot_time(), osversion }
+    }
+}
+
+pub struct IntfStats {
+    #[allow(dead_code)]
+    symbol: char,
+    min: u16,
+    lag: u16
+}
+
+pub struct PingResult {
+    pub node: String,
+    pub intf: String,
+    pub port: String,
+    min: u16,
+    pub losspct: f32,
+    last: Option<u16>,
+    hist: VecDeque<u16>,
+    statesince: u64 // Unix timestamp
+}
+impl PingResult {
+    fn new(node: String, intf: String, port: String) -> PingResult {
+        PingResult { node, intf, port, min: u16::MAX, losspct: 0.0, last: None, hist: VecDeque::with_capacity(HISTSIZE), statesince: unixtime() }
+    }
+    fn push_hist(&mut self, result: u16) {
+        if self.hist.len() >= HISTSIZE { self.hist.pop_back().unwrap(); }
+        self.hist.push_front(result);
+    }
+}
+impl Ord for PingResult {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        match self.node.cmp(&other.node) {
+            cmp::Ordering::Equal => {
+                match self.port.cmp(&other.port) { // TODO: better comparison for ip addresses
+                    cmp::Ordering::Equal => self.intf.cmp(&other.intf),
+                    ord => ord
+                }
+            },
+            ord => ord
+        }
+    }
+}
+impl Eq for PingResult {}
+impl PartialOrd for PingResult {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for PingResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node && self.port == other.port && self.intf == other.intf
+    }
+}
+
+#[derive(Debug)]
+pub struct Path {
+    pub from: String,
+    pub to: String,
+    pub fromintf: String,
+    pub tointf: String,
+    pub losspct: u8,
+    since: u64
+}
+impl Path {
+    fn new(from: String, to: String, fromintf: String, tointf: String, losspct: u8) -> Path {
+        Path { from, to, fromintf, tointf, losspct, since: unixtime() }
+    }
+}
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.from == other.from && self.to == other.to && self.fromintf == other.fromintf && self.tointf == other.tointf
+    }
+}
+
+#[derive(Default)]
+struct Data {
+    log: RwLock<VecDeque<(u64, String)>>,
+    ping: RwLock<VecDeque<String>>,
+    intf: RwLock<HashMap<String, IntfStats>>,
+    results: RwLock<Vec<PingResult>>,
+    pathcache: RwLock<Vec<Path>>
+}
+impl Data {
+    fn push_log(&self, ts: u64, line: String) {
+        let mut log = self.log.write().unwrap();
+        if log.len() >= 50 { log.pop_back().unwrap(); }
+        log.push_front((ts, line));
+    }
+    fn push_ping(&self, line: String) {
+        let mut ping = self.ping.write().unwrap();
+        if ping.len() >= 50 { ping.pop_back().unwrap(); }
+        ping.push_front(line);
     }
 }
 
@@ -387,6 +486,13 @@ pub fn duration_from(mut secs: u64) -> String {
         result.push_str(&format!(" {}{}", secs/delta[c], unit[c]));
     }
     result
+}
+pub fn shorten_ipv6(ip: String) -> String {
+    lazy_static!{
+        static ref LONGIPV6: Regex = Regex::new(r"(?i)^([0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:)[0-9a-f]+:[0-9a-f]+:[0-9a-f]+(:[0-9a-f]+)$").unwrap();
+    }
+    if let Some(caps) = LONGIPV6.captures(&ip) { format!("{}*{}", &caps[1], &caps[2]) }
+    else { ip }
 }
 
 fn variant_eq<T>(a: &T, b: &T) -> bool {
