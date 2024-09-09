@@ -197,7 +197,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                     logmsgs.push((LogLevel::Info, format!("Stopped reporting on {} {} via {} after being down for {}", res.node, res.port, res.intf, duration_from(unixtime()-res.statesince))));
                     false
                 });
-                data.pathcache.write().unwrap().retain(|p| p.since > cutoff);
+                data.pathcache.write().unwrap().retain(|p| p.since > cutoff || p.losspct < 100);
 
                 if config.modified.load(Ordering::Relaxed) {
                     if debug { logmsgs.push((LogLevel::Debug, "Saving configuration file".to_owned())); }
