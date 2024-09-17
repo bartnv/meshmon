@@ -257,7 +257,8 @@ pub async fn handle_websocket(ws: HyperWebsocket, config: Arc<RwLock<Config>>, d
     while let Some(message) = ws_rx.next().await {
         match message? {
             Message::Text(msg) => {
-                println!("Received text message: {}", msg);
+                if msg == "{ \"msg\": \"ping\" }" { tx.send(Ok(Message::Text("{ \"msg\": \"pong\" }".to_string()))).unwrap(); }
+                else { println!("Received text message: {}", msg); }
             },
             Message::Binary(msg) => {
                 println!("Received binary message: {:02X?}", msg);

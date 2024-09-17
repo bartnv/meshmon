@@ -7,25 +7,34 @@
 <script>
   'use strict';
 
-  let app = {};
+  let app = {
+    lastwsmessage: 0
+  };
   // navigator.serviceWorker.register('sw.js');
 
   $().ready(function() {
     setupWebsocket();
-    setInterval(function() { if (!socket || socket.readyState == 3) setupWebsocket(); }, 30000);
+    setInterval(checkWebsocket, 30000);
   });
+  function checkWebsocket() {
+    if (!socket || socket.readyState == 3) setupWebsocket();
+    else if (Date.now()-app.lastwsmessage > 25000) socket.send('{ "msg": "ping" }');
+  }
   function setupWebsocket() {
     window.socket = new WebSocket(location.protocol.replace('http', 'ws') + '//' + location.host + '/ws');
     socket.onopen = function () {
+      app.lastwsmessage = Date.now();
       setStatus('Connected', 'white', 'green');
     };
     socket.onmessage = function(event) {
+      app.lastwsmessage = Date.now();
       let data;
       try {
         data = JSON.parse(event.data);
       } catch(e) {
         console.log(`Failed to parse JSON (${e.message}): ${event.data}`);
       }
+      if (data.msg == 'pong') return;
       console.log('Received ' + data.msg + ' message', data);
       switch (data.msg) {
         case 'init':
