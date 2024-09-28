@@ -3,7 +3,7 @@ use std::{ sync::{ RwLock, Arc }, sync::atomic::Ordering, mem::drop, collections
 use tokio::{ fs, sync };
 use petgraph::{ graph, graph::UnGraph, data::FromElements, algo };
 use rand::seq::SliceRandom;
-use crate::{ Config, Control, Data, IntfStats, LogLevel, Node, Path, PingResult, Protocol, get_local_interfaces, duration_from, unixtime, shorten_ipv6 };
+use crate::{ Config, Control, Data, IntfStats, LogLevel, Node, Path, PingResult, Protocol, get_local_interfaces, duration_from, unixtime, shorten_ipv6, timestamp };
 
 #[cfg(feature = "web")]
 use crate::web::{ run_http, run_https };
@@ -11,7 +11,7 @@ use crate::web::{ run_http, run_https };
 use hyper_tungstenite::tungstenite::Message;
 
 #[cfg(feature = "tui")]
-use crate::{ timestamp, timestamp_from, tui::{ draw, start_tui } };
+use crate::{ timestamp_from, tui::{ draw, start_tui } };
 #[cfg(feature = "tui")]
 use termion::{ input::TermRead, event::Key };
 
@@ -118,6 +118,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
         false => None,
         true => start_tui(data.clone())
     };
+    #[cfg(not(feature = "tui"))]
+    let term: Option<()> = None;
     #[cfg(feature = "tui")]
     let stdintx = ctrltx.clone();
     #[cfg(feature = "tui")]
@@ -501,7 +503,7 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                       _ => format!("Node {:10} {:26} -> {:26} {:>4}ms", node, shorten_ipv6(intf), shorten_ipv6(port), rtt)
                     });
                 }
-                if results { println!("{}", data.ping.read().unwrap().front().unwrap()); }
+                if results && term.is_none() { println!("{}", data.ping.read().unwrap().front().unwrap()); }
                 redraw = true;
             },
             Control::Log(level, text) => {
@@ -643,7 +645,6 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                         }
                     }
                 }
-                #[cfg(feature = "tui")]
                 if term.is_none() { println!("{} {}", timestamp(), text); }
                 else { redraw = true; }
             }
