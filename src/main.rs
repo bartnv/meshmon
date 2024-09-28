@@ -43,9 +43,9 @@ pub struct Config {
     runtime: RwLock<Runtime>,
 }
 impl Config {
-    async fn save(&self) {
+    async fn save(&self, configfile: &String) {
         let data = toml::to_string_pretty(self).unwrap();
-        fs::write("config.toml", data).await.unwrap();
+        fs::write(configfile, data).await.unwrap();
     }
 }
 
@@ -67,6 +67,7 @@ struct Runtime {
     pubkey: Option<PublicKey>,
     graph: UnGraph<String, u32>,
     msp: UnGraph<String, u32>,
+    configfile: String,
     #[cfg(feature = "web")]
     wsclients: Vec<mpsc::UnboundedSender<Result<tungstenite::Message, tungstenite::Error>>>,
     connseq: u32,
@@ -266,6 +267,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .about("A distributed full-mesh network monitor")
         .subcommand_required(true)
         .arg_required_else_help(true)
+        .arg(Arg::new("configfile").short('f').long("configfile").help("The filename for the configuration").default_value("config.toml").global(true))
         .subcommand(Command::new("init")
             .about("Create a new configuration file and exit")
             .arg(Arg::new("name").short('n').long("name").help("The name for this node").default_value("ChangeMe"))
@@ -286,6 +288,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .arg(Arg::new("debug").long("debug").action(ArgAction::SetTrue).help("Verbose logging"))
         );
     let args = app.get_matches();
+    let configfile = args.get_one::<String>("configfile").unwrap().to_string();
     let config: Arc<RwLock<Config>>;
     if let Some(args) = args.subcommand_matches("init") {
         let mut rng = rand::rngs::OsRng;
@@ -304,23 +307,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 runtime: RwLock::new(Default::default()),
             }
         ));
-        config.read().unwrap().save().await;
-        println!("Wrote template configuration file to 'config.toml'");
+        if let Ok(true) = std::fs::exists(&configfile) {
+            let str = format!("configuration file {} already exists", configfile);
+            return Err(str.into());
+        }
+        config.read().unwrap().save(&configfile).await;
+        println!("Wrote template configuration file to '{}'", configfile);
         return Ok(());
     }
-    else { config = Arc::new(RwLock::new(toml::from_str(&fs::read_to_string("config.toml").await?)?)); }
+    else { config = Arc::new(RwLock::new(toml::from_str(&fs::read_to_string(&configfile).await?)?)); }
     let args = args.subcommand_matches("run").unwrap();
 
     println!("Starting meshmon {}", VERSION);
     {
         let rawkey: [u8; 32] = base64.decode(&config.read().unwrap().privkey)?
-            .as_slice().try_into().expect("Entry 'privkey' in config.toml is not a valid base64 private key");
+            .as_slice().try_into().expect("Entry 'privkey' in configuration file is not a valid base64 private key");
         let mut config = config.write().unwrap();
         if let Some(email) = args.get_one::<String>("letsencrypt") {
             config.letsencrypt = Some(email.clone());
-            config.save().await;
+            config.save(&configfile).await;
         }
         let mut runtime = config.runtime.write().unwrap();
+        runtime.configfile = configfile;
         runtime.listen = get_local_interfaces(&config.listen);
         runtime.privkey = Some(rawkey.into());
         runtime.pubkey = Some(runtime.privkey.as_ref().unwrap().public_key());
