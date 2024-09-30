@@ -658,8 +658,8 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
             });
         }
 
-        #[cfg(feature = "tui")]
         if redraw {
+            #[cfg(feature = "tui")]
             if let Some(ref mut term) = term {
                 term.draw(|f| draw(f, data.clone())).unwrap();
             }
