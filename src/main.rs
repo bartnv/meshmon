@@ -355,7 +355,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("My pubkey is {}", base64.encode(runtime.pubkey.as_ref().unwrap().as_bytes()));
     }
 
-    let (ctrltx, ctrlrx) = mpsc::channel(10); // Channel used to send updates to the control task
+    let (ctrltx, ctrlrx) = mpsc::channel(100); // Channel used to send updates to the control task
 
     // TCP listen ports; accept connections and spawn tasks to run the TCP protocol on them
     let learn = config.read().unwrap().runtime.read().unwrap().acceptnewnodes;
@@ -383,7 +383,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // UDP listener
-    let (udptx, udprx) = mpsc::channel(10); // Channel used to send messages to the UDP task
+    let (udptx, udprx) = mpsc::channel(100); // Channel used to send messages to the UDP task
     {
         let config = config.clone();
         let ctrltx = ctrltx.clone();

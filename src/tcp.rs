@@ -6,7 +6,7 @@ use base64::{ Engine as _, engine::general_purpose::STANDARD as base64 };
 use crate::{ Config, Node, Connection, ConnState, Control, Protocol, LogLevel, encrypt_frame, decrypt_frame };
 
 pub async fn run(config: Arc<RwLock<Config>>, mut socket: net::TcpStream, ctrltx: sync::mpsc::Sender<Control>, active: bool, learn: bool) {
-    let (tx, mut ctrlrx) = sync::mpsc::channel(10);
+    let (tx, mut ctrlrx) = sync::mpsc::channel(100);
     let mut conn = Connection::new(match socket.peer_addr() {
         Ok(a) => a.to_string(),
         Err(_) => String::from("{unknown}")

@@ -96,7 +96,7 @@ lazy_static! {
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, ctrltx: sync::mpsc::Sender<Control>, mut udprx: sync::mpsc::Receiver<Control>) {
-    let (readtx, mut readrx) = sync::mpsc::channel(10);
+    let (readtx, mut readrx) = sync::mpsc::channel(100);
     let mut cohort = (0..SPREAD).cycle();
     let mut nodes: HashMap<String, PingNode> = HashMap::new();
     let mut socks = HashMap::new(); // Maps bound local IP addresses to their sockets
