@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use lazy_static::lazy_static;
 use termion::{ raw::IntoRawMode, screen::IntoAlternateScreen, screen::AlternateScreen, raw::RawTerminal };
-use tui::{ Terminal, Frame, backend::{ Backend, TermionBackend }, widgets::{ Block, Borders, List, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction, Corner }, text::{ Span, Spans }, style::{ Style, Color } };
+use ratatui::{ prelude::*, Terminal, Frame, backend::TermionBackend, widgets::{ Block, Borders, List, ListDirection, ListItem, Table, Row }, layout::{ Layout, Constraint, Direction }, text::{ Line, Span }, style::Color };
 use crate::{ Data, shorten_ipv6, timestamp_from };
 
 
@@ -19,19 +19,19 @@ pub fn start_tui(data: Arc<Data>) -> Option<Terminal<TermionBackend<AlternateScr
     Some(term)
 }
 
-pub fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
+pub fn draw(f: &mut Frame, data: Arc<Data>) {
     let resultssize = match data.results.read().unwrap().len() { 0 => 3, n => n+2 } as u16;
     let vert1 = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(12), Constraint::Length(resultssize) ].as_ref())
-        .split(f.size());
+        .constraints([Constraint::Min(12), Constraint::Length(resultssize) ])
+        .split(f.area());
     let hori = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Max(105), Constraint::Percentage(50)].as_ref())
+        .constraints([Constraint::Max(95), Constraint::Min(50)])
         .split(vert1[0]);
     let vert2 = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length((data.intf.read().unwrap().len()+3) as u16)].as_ref())
+        .constraints([Constraint::Min(6), Constraint::Length((data.intf.read().unwrap().len()+3) as u16)])
         .split(hori[1]);
 
     let block = Block::default()
@@ -41,7 +41,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
     for line in data.ping.read().unwrap().iter().take(hori[0].height.into()) {
         content.push(ListItem::new(Span::from(line.clone())));
     }
-    let list = List::new(content).block(block).start_corner(Corner::BottomLeft);
+    let list = List::new(content).block(block).direction(ListDirection::BottomToTop);
     f.render_widget(list, hori[0]);
 
     let block = Block::default()
@@ -51,7 +51,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
     for (ts, line) in data.log.read().unwrap().iter().take(vert2[0].height.into()) {
         content.push(ListItem::new(Span::from(format!("{} {}", timestamp_from(*ts), line))));
     }
-    let list = List::new(content).block(block).start_corner(Corner::BottomLeft);
+    let list = List::new(content).block(block).direction(ListDirection::BottomToTop);
     f.render_widget(list, vert2[0]);
 
     let block = Block::default()
@@ -66,11 +66,10 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
             content.push(Row::new(vec![ format!(" {} ", stats.symbol), shorten_ipv6(intf.clone()), format!("{:^5}", stats.min), format!("{:^5}", stats.lag) ]));
         }
     }
-    let table = Table::new(content)
+    let table = Table::new(content, &[Constraint::Length(3), Constraint::Length(26), Constraint::Length(5), Constraint::Length(5)])
         .block(block)
         .column_spacing(1)
-        .header(Row::new(vec![ "Sym", "Interface", "Best", "Lag" ]))
-        .widths(&[Constraint::Length(3), Constraint::Length(26), Constraint::Length(5), Constraint::Length(5)]);
+        .header(Row::new(vec![ "Sym", "Interface", "Best", "Lag" ]));
     f.render_widget(table, vert2[1]);
 
     let block = Block::default()
@@ -99,10 +98,10 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, data: Arc<Data>) {
         for rtt in result.hist.iter().take((vert1[1].width-43).into()) {
             line.push(draw_mark(*rtt, result.min, mark));
         }
-        content.push(ListItem::new(Spans::from(line)));
+        content.push(ListItem::new(Line::from(line)));
     }
     if content.is_empty() { content.push(ListItem::new("No results yet")); }
-    let list = List::new(content).block(block).start_corner(Corner::TopLeft);
+    let list = List::new(content).block(block).direction(ListDirection::TopToBottom);
     f.render_widget(list, vert1[1]);
 }
 

@@ -32,7 +32,7 @@ hyper-tungstenite = { version = "*", optional = true }
 http-body-util = { version = "0", optional =  true }
 rustls-acme = { version = "*", features = [ "tokio" ], optional = true }
 lazy_static = "1"
-tui = { version = "0.19", default-features = false, features = ['termion'], optional = true }
+ratatui = { version = "0.28", default-features = false, features = ['termion'], optional = true }
 termion = { version = "4", optional = true }
 chrono = "0"
 git-version = "*"
@@ -40,7 +40,7 @@ regex = "*"
 
 [features]
 web = ["dep:hyper", "dep:hyper-util", "dep:hyper-tungstenite", "dep:http-body-util", "dep:tokio-stream", "dep:futures-util", "dep:rustls-acme", "dep:async-trait", "dep:ring"]
-tui = ["dep:tui", "dep:termion"]
+tui = ["dep:ratatui", "dep:termion"]
 
 [profile.release]
 strip = true
