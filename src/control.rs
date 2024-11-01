@@ -495,12 +495,13 @@ pub async fn run(aconfig: Arc<RwLock<Config>>, mut rx: sync::mpsc::Receiver<Cont
                 };
                 if sort { data.results.write().unwrap().sort(); }
                 if rtt == 0 {
-                    data.push_ping(format!("Node {:10} {:26} -> {:26} lost", node, shorten_ipv6(intf), shorten_ipv6(port)));
+                    data.push_ping(format!("{:10} {:26} -> {:26} lost", node, shorten_ipv6(intf), shorten_ipv6(port)));
                 }
                 else {
                     data.push_ping(match rtt-min {
-                      n if n > THRESHOLD => format!("Node {:10} {:26} -> {:26} {:>4}ms (min {}/dif {}/cat {})", node, shorten_ipv6(intf), shorten_ipv6(port), rtt, min, rtt-min, ((n-THRESHOLD) as f32).sqrt() as u16),
-                      _ => format!("Node {:10} {:26} -> {:26} {:>4}ms", node, shorten_ipv6(intf), shorten_ipv6(port), rtt)
+                    //   n if n > THRESHOLD => format!("{:10} {:26} -> {:26} {:>4}ms (min {}/dif {}/cat {})", node, shorten_ipv6(intf), shorten_ipv6(port), rtt, min, rtt-min, ((n-THRESHOLD) as f32).sqrt() as u16),
+                    n if n > THRESHOLD => format!("{:10} {:26} -> {:26} {:>4}ms (+{})", node, shorten_ipv6(intf), shorten_ipv6(port), rtt, rtt-min),
+                    _ => format!("{:10} {:26} -> {:26} {:>4}ms", node, shorten_ipv6(intf), shorten_ipv6(port), rtt)
                     });
                 }
                 if results && term.is_none() { println!("{}", data.ping.read().unwrap().front().unwrap()); }
